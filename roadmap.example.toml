@@ -1,0 +1,50 @@
+# roadmap.example.toml -- copy to roadmap.toml at the root of your workspace
+# and edit, or run `roadmap init` to have it probed and written for you.
+#
+# Relative paths resolve against THIS FILE's directory, never the shell's
+# cwd -- the SessionStart hook can run from wherever a session happened to
+# open, and `workspace = "."` has to mean the same thing to it as to the CLI.
+
+# Where `bd` runs. This is the directory bd's own workspace lives in -- the
+# roadmap tool shells out to `bd list` with this as the subprocess cwd.
+workspace = "."
+
+# The directory holding `refs/tags/v*`. roadmap derives which version is "in
+# flight" from the highest semver `v*` git tag reachable here, so this must
+# be a git checkout with those tags, not just any path.
+tag_repo = "."
+
+# The <ns> in release labels shaped release:<ns>-vX.Y.Z, e.g.
+# release:acme-app-v1.2.0. This is a STRING you choose, not a path --
+# it is how the tool tells "my board's release labels" apart from anyone
+# else's if multiple products share one bd workspace.
+release_namespace = "acme-app"
+
+# These three knobs are genuinely different things, even though a
+# single-repo setup collapses all three to the same value (as this example
+# does: "." three times over, if release_namespace were a path). Splitting
+# them apart matters as soon as any one of these differs from the others --
+# for example, bd tracking issues for several products out of one shared
+# workspace while each product's tags and label namespace live separately.
+
+# ISO date. Optional -- defaults to the day `roadmap init` (or the first
+# real run) was executed. Governs a 14-day warm-up: before this many days
+# have passed since convention_start, the tool suppresses its "off-plan"
+# claim rather than asserting against a release-label convention that is
+# too young to mean anything yet.
+convention_start = "2026-09-21"
+
+# Label prefixes whose issues are EXCLUDED from every count -- unscheduled,
+# hotfix, throughput, all of it. Leave this empty unless something other
+# than a person files issues on your board.
+#
+# On the reference deployment this tool was built against, auto-filed rows
+# outnumbered human-authored ones roughly four to one and dominated every
+# metric -- throughput, the hotfix queue, the unscheduled list -- until
+# filtered out. A single prefix still has to be written as a one-element
+# list; a bare string is rejected rather than silently treated as one,
+# because Python's str.startswith() also accepts a tuple, and a plain
+# string handed to it decomposes into its individual characters as a
+# one-character-prefix filter -- which matches almost everything and
+# quietly deletes most of the board.
+auto_label_prefixes = []

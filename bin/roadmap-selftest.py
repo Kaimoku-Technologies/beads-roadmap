@@ -1,0 +1,1413 @@
+#!/usr/bin/env python3
+"""Suite for bin/roadmap. Both directions on every rule, because a detector
+that fires on everything and one that fires on nothing are indistinguishable
+from a single passing assertion.
+
+    python3 bin/roadmap-selftest.py
+
+bin/roadmap has no .py extension, so it is loaded by path the same way
+bin/perms-selftest.py loads bin/perms.
+"""
+import ast
+import contextlib
+import datetime
+import importlib.machinery
+import importlib.util
+import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+MODULE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'roadmap')
+
+spec = importlib.util.spec_from_loader(
+    'roadmap_under_test',
+    importlib.machinery.SourceFileLoader('roadmap_under_test', MODULE_PATH),
+)
+rm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rm)
+
+# The suite's namespace is deliberately FOREIGN to every default and to the
+# reference deployment, so a surviving hardcoded namespace FAILS here rather
+# than passing. See the decoupling scan at the end of this file.
+TEST_CFG = {'workspace': '/nonexistent/workspace',
+            'tag_repo': '/nonexistent/workspace/acme-app',
+            'release_namespace': 'acme-app',
+            'convention_start': '2026-09-20',
+            'auto_label_prefixes': ('audit-fp:', 'resource-fp:',
+                                    'resource-watch', 'audit-ack')}
+rm.configure(TEST_CFG)
+
+FAILURES = []
+
+
+def check(label, got, want):
+    if got != want:
+        FAILURES.append('%s: got %r, want %r' % (label, got, want))
+
+
+def issue(**kw):
+    """A bd row with the fields bin/roadmap reads, defaulted."""
+    row = {'id': 'github-test', 'title': '', 'labels': [], 'priority': 3,
+           'issue_type': 'task', 'status': 'open', 'updated_at': '2026-09-21T00:00:00Z'}
+    row.update(kw)
+    return row
+
+
+# --- version parsing ------------------------------------------------------
+VERSION_MUST_PARSE = [
+    ('plain',            'v0.16.0',                     (0, 16, 0)),
+    ('no v prefix',      '0.16.0',                      (0, 16, 0)),
+    ('double digit',     'v0.16.10',                    (0, 16, 10)),
+]
+VERSION_MUST_NOT_PARSE = [
+    ('prerelease',       'v0.11.0-beta'),
+    ('two components',   'v0.16'),
+    ('empty',            ''),
+    ('words',            'latest'),
+]
+
+for label, text, want in VERSION_MUST_PARSE:
+    check('parse_version ' + label, rm.parse_version(text), want)
+for label, text in VERSION_MUST_NOT_PARSE:
+    check('parse_version rejects ' + label, rm.parse_version(text), None)
+
+# SemVer ordering must be numeric, not lexical. v0.9.0 < v0.10.0 is the case
+# a string sort gets backwards, and it is why this is asserted rather than
+# assumed.
+check('semver order not lexical',
+      sorted([rm.parse_version('v0.10.0'), rm.parse_version('v0.9.0')]),
+      [(0, 9, 0), (0, 10, 0)])
+
+# --- label -> version -----------------------------------------------------
+check('label of this repo',
+      rm.version_of_label('release:acme-app-v0.16.0'), ('acme-app', (0, 16, 0)))
+check('label of another repo',
+      rm.version_of_label('release:acme-lib-v0.4.0'), ('acme-lib', (0, 4, 0)))
+check('non-release label', rm.version_of_label('work:available'), None)
+check('release label, unparseable version',
+      rm.version_of_label('release:acme-app-vNEXT'), None)
+
+check('release_versions filters to REPO',
+      rm.release_versions(issue(labels=['release:acme-app-v0.17.0',
+                                        'release:acme-lib-v0.4.0'])),
+      [(0, 17, 0)])
+
+# --- patch detection ------------------------------------------------------
+check('minor is not patch', rm.is_patch((0, 16, 0)), False)
+check('patch is patch', rm.is_patch((0, 16, 1)), True)
+
+# --- auto-filed filter ----------------------------------------------------
+HUMAN_MUST_KEEP = [
+    ('no labels',            issue(labels=[])),
+    ('ordinary label',       issue(labels=['security'])),
+    ('release label',        issue(labels=['release:acme-app-v0.16.0'])),
+]
+HUMAN_MUST_DROP = [
+    ('audit fingerprint',    issue(labels=['audit-fp:49943dc56f60'])),
+    ('resource fingerprint', issue(labels=['resource-fp:abc'])),
+    ('resource-watch',       issue(labels=['resource-watch'])),
+    ('audit ack',            issue(labels=['audit-ack:49943dc56f60'])),
+    ('mixed',                issue(labels=['security', 'resource-watch'])),
+]
+for label, row in HUMAN_MUST_KEEP:
+    check('human keeps ' + label, rm.is_human_authored(row), True)
+for label, row in HUMAN_MUST_DROP:
+    check('human drops ' + label, rm.is_human_authored(row), False)
+
+# --- security marking: the UNION, because neither marker alone is enough --
+SEC_MUST_MATCH = [
+    ('label only',        issue(labels=['security'], title='Refresh token reuse')),
+    ('label uppercase',   issue(labels=['Security'], title='Refresh token reuse')),
+    ('title only',        issue(labels=[], title='[SECURITY] Refresh does not revoke jti')),
+    ('title mid-string',  issue(labels=[], title='acme-app: [SECURITY] SPF gap')),
+    ('both',              issue(labels=['security'], title='[SECURITY] x')),
+]
+SEC_MUST_NOT_MATCH = [
+    ('neither',           issue(labels=['ci'], title='lint stage is red')),
+    ('word in prose',     issue(labels=[], title='improve security posture docs')),
+    ('secscan label',     issue(labels=['secscan'], title='Aikido is inert')),
+]
+for label, row in SEC_MUST_MATCH:
+    check('security marks ' + label, rm.is_security_marked(row), True)
+for label, row in SEC_MUST_NOT_MATCH:
+    check('security skips ' + label, rm.is_security_marked(row), False)
+
+# --- model ----------------------------------------------------------------
+def tagged(v, **kw):
+    kw.setdefault('labels', [])
+    kw['labels'] = list(kw['labels']) + ['release:acme-app-' + v]
+    return issue(**kw)
+
+
+OPEN = [
+    # v0.16.0 leaves
+    tagged('v0.16.0', id='f-business', issue_type='feature', priority=1, title='Business Mode'),
+    tagged('v0.16.0', id='b-cred', issue_type='bug', priority=1,
+           title='GET system settings returns every credential unredacted'),
+    tagged('v0.16.0', id='t-dns', issue_type='task', priority=3, title='DNS validator'),
+    # a gating EPIC on v0.18.0, plus one of its children also tagged
+    tagged('v0.18.0', id='mailha-1', issue_type='epic', priority=2, title='prod mail HA'),
+    tagged('v0.18.0', id='mailha-1.1', issue_type='task', priority=3, title='stage 2'),
+    # unscheduled
+    issue(id='u-p0', issue_type='feature', priority=0, title='Classifier Interface'),
+    issue(id='u-epic', issue_type='epic', priority=2, title='Unified Console'),
+    issue(id='u-task', issue_type='task', priority=2, title='not a roadmap line'),
+    # hotfix arms
+    issue(id='h-bug', issue_type='bug', priority=1, title='prod credentials exposed'),
+    issue(id='h-sec', issue_type='bug', priority=2, title='[SECURITY] jti not revoked'),
+    issue(id='h-p2bug', issue_type='bug', priority=2, title='ordinary P2 bug'),
+    issue(id='h-p3sec', issue_type='bug', priority=3, title='[SECURITY] low severity'),
+    # auto-filed noise must never reach any bucket
+    issue(id='noise', issue_type='bug', priority=1, labels=['resource-watch'], title='disk'),
+]
+CLOSED = [tagged('v0.16.0', id='done-1', issue_type='task', priority=3, title='done')]
+TAGS = [(0, 15, 0), (0, 14, 1)]
+
+M = rm.build_model(OPEN, CLOSED, TAGS)
+
+check('cut version', M['cut'], (0, 15, 0))
+check('in flight', M['in_flight'], (0, 16, 0))
+check('planned', M['planned'], [(0, 18, 0)])
+
+# Epic exclusion: mailha-1 is an epic on v0.18.0 and must contribute ZERO to
+# the counts while still appearing under gates. rot-1 has 51 dependents in
+# real life; rolling those in would make a version's count meaningless.
+v18 = M['versions'][(0, 18, 0)]
+check('epic not in leaves', [i['id'] for i in v18['leaves_open']], ['mailha-1.1'])
+check('epic in gates', [i['id'] for i in v18['gates']], ['mailha-1'])
+
+v16 = M['versions'][(0, 16, 0)]
+check('v16 open leaf count', len(v16['leaves_open']), 3)
+check('v16 closed leaf count', v16['leaves_closed'], 1)
+check('v16 leaf order puts P1 feature first',
+      [i['id'] for i in v16['leaves_open']], ['f-business', 'b-cred', 't-dns'])
+
+# Unscheduled is features and epics only -- a task with no version is not a
+# roadmap line, and auto-filed rows never appear.
+check('unscheduled ids', [i['id'] for i in M['unscheduled']], ['u-p0', 'u-epic'])
+
+# Hotfix queue: P0-P1 bug OR security-marked P0-P2. The P1 bug arm is the
+# BACKSTOP for unmarked security work -- b-cred is exactly that case in real
+# life, but it is already versioned, so the queue holds only unversioned rows.
+check('hotfix ids', [i['id'] for i in M['hotfix']], ['h-bug', 'h-sec'])
+check('hotfix excludes ordinary P2 bug',
+      'h-p2bug' in [i['id'] for i in M['hotfix']], False)
+check('hotfix excludes P3 security',
+      'h-p3sec' in [i['id'] for i in M['hotfix']], False)
+check('hotfix excludes auto-filed',
+      'noise' in [i['id'] for i in M['hotfix']], False)
+
+# MUST-MISS on the whole model: a version nobody created has no entry.
+check('absent version absent', (9, 99, 9) in M['versions'], False)
+
+# Horizon-empty shape: with no labels above the cut tag there is no in-flight
+# version at all, which is what condition 1 keys on.
+EMPTY = rm.build_model([issue(id='x')], [], [(0, 15, 0)])
+check('no in flight when nothing tagged', EMPTY['in_flight'], None)
+check('no planned when nothing tagged', EMPTY['planned'], [])
+
+# PATCH EXEMPTION. A dot release is unplanned by SemVer definition, and the
+# whole hotfix design depends on being able to cut one without roadmapping it.
+# MUST-MISS: a patch never appears as a planned version.
+PATCH = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.16.1', id='fix')],
+                       [], [(0, 15, 0)])
+check('patch is not a planned version', PATCH['planned'], [])
+check('patch does not displace the in-flight minor', PATCH['in_flight'], (0, 16, 0))
+# MUST-HIT control on the same fixture: a MINOR in the same position IS
+# planned, which proves the filter is discriminating and not just empty.
+MINOR = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.17.0', id='next')],
+                       [], [(0, 15, 0)])
+check('control — a minor IS planned', MINOR['planned'], [(0, 17, 0)])
+# A patch in flight is legitimate -- that is a hotfix shipping.
+INFLIGHT_PATCH = rm.build_model([tagged('v0.15.1', id='hf')], [], [(0, 15, 0)])
+check('a patch may be in flight', INFLIGHT_PATCH['in_flight'], (0, 15, 1))
+
+# --- conditions -----------------------------------------------------------
+def conds(model, state, today='2026-11-01'):
+    return {c['id']: c for c in rm.evaluate(model, state, today)}
+
+
+FRESH = {'last_reported_at': 0.0, 'convention_start': '2026-09-20', 'baselines': {}}
+
+
+def state(**kw):
+    s = dict(FRESH)
+    s['baselines'] = dict(FRESH['baselines'])
+    s.update(kw)
+    return s
+
+
+# --- defect: convention_start must not inherit a stale literal (github-cnzq7)
+# MUST-HIT: an absent state file seeds TODAY, so warm-up starts at install.
+_nostate = os.path.join(tempfile.mkdtemp(), 'nope.json')
+check('absent state seeds convention_start to today',
+      rm.load_state(_nostate, today='2027-03-01')['convention_start'],
+      '2027-03-01')
+
+# MUST-MISS: a state file that HAS the key keeps it. Seeding on every load
+# would restart warm-up forever and silence condition 3 permanently.
+_haskey = os.path.join(tempfile.mkdtemp(), 's.json')
+with open(_haskey, 'w') as _fh:
+    json.dump({'convention_start': '2026-09-20'}, _fh)
+check('an existing convention_start is preserved',
+      rm.load_state(_haskey, today='2027-03-01')['convention_start'],
+      '2026-09-20')
+
+# The regression itself: a cold board long after the old literal must stay
+# SILENT, because its convention is one day old, not five months.
+_COLD = rm.build_model([tagged('v0.16.0', id='a')], [], [(0, 15, 0)])
+_COLD['throughput'] = {'on_plan_share_14d': 0.0}
+_cold_state = rm.load_state(_nostate, today='2027-03-01')
+check('c3 silent during a freshly seeded warm-up',
+      3 in conds(_COLD, _cold_state, today='2027-03-01'), False)
+
+# MUST-HIT control: the SAME board with an elapsed warm-up DOES report it,
+# so the silence above is the warm-up working, not condition 3 being dead.
+_warm_state = dict(_cold_state, convention_start='2027-01-01')
+check('c3 fires once warm-up has elapsed',
+      3 in conds(_COLD, _warm_state, today='2027-03-01'), True)
+
+# --- defect (fix round 1): the board's "no on-plan claim yet" note must
+# print the PER-INSTALL convention_start threaded through the model, never
+# a module literal (github-cnzq7). Before this fix, render_board read the
+# now-deleted CONVENTION_START directly, so a fresh install that correctly
+# seeded convention_start to its install date (the A1 fix above) still told
+# the user warm-up "started 2026-09-20" -- the exact literal A1 removed,
+# reintroduced through a second door.
+_CS_MODEL = rm.build_model([tagged('v0.16.0', id='a')], [], [(0, 15, 0)])
+_CS_MODEL['throughput'] = {'on_plan_share_14d': None}  # gates the note
+_CS_MODEL['convention_start'] = '2027-05-05'
+_cs_board = rm.render_board(_CS_MODEL, [])
+check('board prints the threaded convention_start',
+      '2027-05-05' in _cs_board, True)
+
+# MUST-MISS: the old literal must not survive beside the derived value.
+# Without this the fix could add the real date and leave the frozen one
+# printed too -- the same trap A2's must-miss covers for condition 1.
+check('board no longer prints the old hardcoded convention_start',
+      '2026-09-20' in _cs_board, False)
+
+# --- defect (fix round 2): the "no convention_start on the model" fallback
+# must NOT substitute today() -- that is a guess wearing the costume of a
+# fact, the same error as the literal fix round 1 removed. Two PRE-EXISTING
+# fixtures (FUTURE_MODEL, DEFAULT_MODEL further down) exercised this exact
+# fallback by omission and asserted nothing about which date came out, so
+# the bug shipped in fix round 1 and passed. This pair is the assertion
+# that would have caught it: it must genuinely fail against a today()
+# fallback (verified against the fix-round-1 commit before the fix below
+# was written) and pass only once the line says the start is unknown.
+_NOCS_MODEL = rm.build_model([tagged('v0.16.0', id='a')], [], [(0, 15, 0)])
+_NOCS_MODEL['throughput'] = {'on_plan_share_14d': None}  # gates the note
+# convention_start deliberately NOT set on this model.
+_nocs_board = rm.render_board(_NOCS_MODEL, [])
+check('board says the convention start is unknown when the model has none',
+      'convention start unknown' in _nocs_board, True)
+
+# MUST-MISS: no guessed date -- specifically not TODAY, which is exactly
+# what render_board silently substituted before this fix.
+check('board does not guess today() for a missing convention_start',
+      datetime.date.today().isoformat() in _nocs_board, False)
+
+
+# Condition 1: horizon empty. MUST fire when nothing is tagged above the
+# in-flight version; MUST NOT fire once something is.
+C1_EMPTY = rm.build_model([tagged('v0.16.0', id='a')], [], [(0, 15, 0)])
+C1_FULL = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b')],
+                         [], [(0, 15, 0)])
+check('c1 fires on empty horizon', 1 in conds(C1_EMPTY, state()), True)
+check('c1 silent with a planned version', 1 in conds(C1_FULL, state()), False)
+check('c1 bypasses the throttle', conds(C1_EMPTY, state())[1]['bypass'], True)
+# c1 lines content: a mutation renaming 'lines' to 'text' must be caught, not
+# just a header/footer around nothing. Also covers the hook's property-5
+# remediation text: `bd label add`, and the label going LAST.
+_c1_lines = conds(C1_EMPTY, state())[1]['lines']
+check('c1 lines non-empty', len(_c1_lines) > 0, True)
+check('c1 lines mention HORIZON EMPTY', 'HORIZON EMPTY' in '\n'.join(_c1_lines), True)
+check('c1 lines carry the bd label add remediation',
+      'bd label add' in '\n'.join(_c1_lines), True)
+check('c1 lines say the label goes last',
+      'LABEL GOES LAST' in '\n'.join(_c1_lines), True)
+
+# --- defect: condition 1 must DERIVE its example version (github-cnzq7) ----
+# C1_EMPTY has cut v0.15.0 and in-flight v0.16.0, so the next feature
+# version to plan into is v0.17.0 -- a MINOR bump, not the patch bump
+# condition 5 uses for hotfixes.
+check('c1 names the next MINOR after in-flight',
+      'release:acme-app-v0.17.0' in ' '.join(conds(C1_EMPTY, state())[1]['lines']),
+      True)
+
+# MUST-MISS: the literal it replaced has to be GONE. Without this the fix
+# could add a derived line and leave the wrong one beside it.
+check('c1 no longer names a hardcoded v0.18.0',
+      'v0.18.0' in ' '.join(conds(C1_EMPTY, state())[1]['lines']),
+      False)
+
+# With nothing in flight there is no version to bump, so the message must
+# degrade to a placeholder rather than inventing v1.0.0 or crashing.
+C1_NO_INFLIGHT = rm.build_model([], [], [(0, 15, 0)])
+check('c1 uses a placeholder when nothing is in flight',
+      '<version>' in ' '.join(conds(C1_NO_INFLIGHT, state())[1]['lines']),
+      True)
+
+# Condition 2: scope creep, measured against a baseline. No baseline -> NO
+# creep line, and specifically never "+0", which would assert an absence that
+# was not measured.
+CREEP = rm.build_model(
+    [tagged('v0.16.0', id='a'), tagged('v0.16.0', id='b'), tagged('v0.17.0', id='p')],
+    [], [(0, 15, 0)])
+check('c2 silent without a baseline', 2 in conds(CREEP, state()), False)
+check('c2 fires against a baseline',
+      2 in conds(CREEP, state(baselines={'0.16.0': ['a']})), True)
+check('c2 silent when set matches baseline',
+      2 in conds(CREEP, state(baselines={'0.16.0': ['a', 'b']})), False)
+
+# Condition 2 carve-out: a hotfix member pulled into the in-flight version is
+# NEVER creep. Without this the creep detector fights the escalation policy.
+CREEP_HOTFIX = rm.build_model(
+    [tagged('v0.16.0', id='a'),
+     tagged('v0.16.0', id='sec', issue_type='bug', priority=1, title='[SECURITY] x')],
+    [], [(0, 15, 0)])
+check('c2 exempts a hotfix addition',
+      2 in conds(CREEP_HOTFIX, state(baselines={'0.16.0': ['a']})), False)
+
+# Condition 3: off-plan share, SUPPRESSED during warm-up. Suppressed means
+# ABSENT, not zero and not hedged -- a number whose true cause is the
+# convention's age would train the reader to ignore the hook.
+check('c3 suppressed inside warm-up',
+      3 in conds(C1_FULL, state(), today='2026-09-25'), False)
+check('warmup_active inside window', rm.warmup_active(state(), '2026-09-25'), True)
+check('warmup_active outside window', rm.warmup_active(state(), '2026-10-05'), False)
+
+# Condition 3 MUST-HIT / MUST-MISS. Every fixture reaching conds() elsewhere
+# in this suite has throughput == {}, so share is always None and this
+# branch was previously unreachable -- a mutation deleting condition 3
+# outright, or loosening its threshold to `share < 0.0`, left the suite
+# green. today='2026-11-01' is well past the warm-up window.
+C3_FIRE = dict(C1_FULL)
+C3_FIRE['throughput'] = {'on_plan_share_14d': 0.1}
+check('c3 fires below the 40% threshold after warm-up',
+      3 in conds(C3_FIRE, state(), today='2026-11-01'), True)
+check('c3 line reports the percentage',
+      conds(C3_FIRE, state(), today='2026-11-01')[3]['lines'][0],
+      'OFF-PLAN -- 10% of the last 14 days of human-authored closes were'
+      ' in a release set.')
+# MUST-MISS: a share above the threshold does not fire.
+C3_CLEAN = dict(C1_FULL)
+C3_CLEAN['throughput'] = {'on_plan_share_14d': 0.9}
+check('c3 silent above the 40% threshold (control)',
+      3 in conds(C3_CLEAN, state(), today='2026-11-01'), False)
+
+# Condition 4: unscheduled P0/P1 feature or epic.
+C4 = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b'),
+                     issue(id='u', issue_type='feature', priority=0, title='P0')],
+                    [], [(0, 15, 0)])
+check('c4 fires on an unscheduled P0', 4 in conds(C4, state()), True)
+check('c4 bypasses the throttle', conds(C4, state())[4]['bypass'], True)
+check('c4 silent when none', 4 in conds(C1_FULL, state()), False)
+_c4_lines = conds(C4, state())[4]['lines']
+check('c4 lines non-empty', len(_c4_lines) > 0, True)
+check('c4 lines mention UNSCHEDULED P0/P1', 'UNSCHEDULED P0/P1' in '\n'.join(_c4_lines), True)
+# MUST-MISS: a P2 feature with no version is backlog, not a planning bug.
+C4_P2 = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b'),
+                        issue(id='u2', issue_type='feature', priority=2)],
+                       [], [(0, 15, 0)])
+check('c4 silent on a P2 feature', 4 in conds(C4_P2, state()), False)
+
+# Condition 5: hotfix queue. P0/P1 bypasses the throttle; a P2-only queue does
+# not, because nine lines every session is how a hook gets torn out.
+C5_P1 = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b'),
+                        issue(id='h', issue_type='bug', priority=1, title='creds exposed')],
+                       [], [(0, 15, 0)])
+C5_P2 = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b'),
+                        issue(id='h2', issue_type='bug', priority=2, title='[SECURITY] x')],
+                       [], [(0, 15, 0)])
+check('c5 fires on a P1 bug', 5 in conds(C5_P1, state()), True)
+check('c5 P1 bypasses throttle', conds(C5_P1, state())[5]['bypass'], True)
+check('c5 fires on a P2 security issue', 5 in conds(C5_P2, state()), True)
+check('c5 P2 does NOT bypass throttle', conds(C5_P2, state())[5]['bypass'], False)
+check('c5 silent on an empty queue', 5 in conds(C1_FULL, state()), False)
+_c5_lines = conds(C5_P1, state())[5]['lines']
+check('c5 lines non-empty', len(_c5_lines) > 0, True)
+check('c5 lines mention HOTFIX QUEUE', 'HOTFIX QUEUE' in '\n'.join(_c5_lines), True)
+
+# TOTAL SILENCE is reachable. If it is not, the hook is a nag and gets removed.
+check('all clean -> no conditions', rm.evaluate(C1_FULL, state(), '2026-09-25'), [])
+
+# --- fix round 1: condition 2 must not be silenced by an empty baseline ---
+# A version becomes in_flight as soon as ANY issue references it, open or
+# closed -- so a version whose only tagged issue is already closed baselines
+# to []. `if base:` treated that recorded-empty baseline the same as
+# no-baseline-at-all, permanently and silently disabling creep detection for
+# that version. The fix distinguishes "key absent" from "key present, value
+# []" via `is not None`.
+
+# MUST-HIT: baseline recorded as [] with a non-empty current set -- every
+# current member arrived after the baseline, so all of it is reported added.
+check('c2 fires when baseline was recorded empty',
+      2 in conds(C1_FULL, state(baselines={'0.16.0': []})), True)
+check('c2 empty-baseline reports every current member as added',
+      conds(C1_FULL, state(baselines={'0.16.0': []}))[2]['lines'][0],
+      'SCOPE CREEP -- v0.16.0 was 0 issues at baseline, now 1 (+1 added).')
+
+# MUST-MISS control: with NO '0.16.0' key at all (the original no-baseline
+# case), condition 2 must still stay silent -- proves the fix touched only
+# the recorded-empty-list case, not the absent-key case.
+check('c2 still silent with no baseline key recorded at all (control)',
+      2 in conds(C1_FULL, state()), False)
+
+# MUST-MISS: baseline recorded as [] AND the in-flight version's current set
+# is also empty (its only tagged issue is closed, none open) -- nothing was
+# added, so no creep line. This is the exact scenario the finding named: a
+# version becomes in_flight from a CLOSED reference alone.
+CREEP_EMPTY_INFLIGHT = rm.build_model(
+    [tagged('v0.17.0', id='b')],
+    [tagged('v0.16.0', id='closed-a')],
+    [(0, 15, 0)])
+check('setup: closed-only tag still makes the version in-flight',
+      CREEP_EMPTY_INFLIGHT['in_flight'], (0, 16, 0))
+check('c2 silent when baseline and current are both empty',
+      2 in conds(CREEP_EMPTY_INFLIGHT, state(baselines={'0.16.0': []})), False)
+
+# --- fix round 1: load_state / save_state coverage ------------------------
+# Every earlier assertion injects a state() dict directly, so the real
+# file read/write path -- and design rule 9 (absent/corrupt state behaves
+# like "never reported", never like "just reported") -- was previously
+# verified only by reading the code.
+
+with tempfile.TemporaryDirectory() as _d:
+    # Missing file -> defaults, not an exception and not "just reported".
+    # convention_start seeds to the passed today (github-cnzq7), not the
+    # module literal -- pinned here so the assertion stays deterministic.
+    _missing = os.path.join(_d, 'nested', 'does-not-exist.json')
+    _s = rm.load_state(_missing, today='2027-01-15')
+    check('load_state missing file: last_reported_at', _s['last_reported_at'], 0.0)
+    check('load_state missing file: convention_start', _s['convention_start'],
+          '2027-01-15')
+    check('load_state missing file: baselines', _s['baselines'], {})
+
+with tempfile.TemporaryDirectory() as _d:
+    # Corrupt file -> same defaults as missing, never "just reported".
+    # Same today-seeding as the missing-file case above (github-cnzq7).
+    _corrupt = os.path.join(_d, 'state.json')
+    with open(_corrupt, 'w') as _fh:
+        _fh.write('not json at all')
+    _s = rm.load_state(_corrupt, today='2027-01-15')
+    check('load_state corrupt file: last_reported_at', _s['last_reported_at'], 0.0)
+    check('load_state corrupt file: convention_start', _s['convention_start'],
+          '2027-01-15')
+    check('load_state corrupt file: baselines', _s['baselines'], {})
+
+with tempfile.TemporaryDirectory() as _d:
+    # Round trip through a not-yet-existing nested directory (save_state
+    # must create it) -- baselines and last_reported_at survive intact.
+    _path = os.path.join(_d, 'nested', 'state.json')
+    _to_save = {'last_reported_at': 999.5, 'convention_start': '2026-09-20',
+                'baselines': {'0.16.0': ['a', 'b']}}
+    rm.save_state(_path, _to_save)
+    _loaded = rm.load_state(_path)
+    check('save/load round-trip: baselines', _loaded['baselines'],
+          {'0.16.0': ['a', 'b']})
+    check('save/load round-trip: last_reported_at', _loaded['last_reported_at'], 999.5)
+
+with tempfile.TemporaryDirectory() as _d:
+    # MUST-HIT control proving the defaults assertions above actually
+    # discriminate: a valid file with a real last_reported_at loads THAT
+    # value, not the 0.0 default.
+    _valid = os.path.join(_d, 'state.json')
+    with open(_valid, 'w') as _fh:
+        _fh.write('{"last_reported_at": 12345.0, "convention_start": '
+                  '"2026-01-01", "baselines": {}}')
+    _s = rm.load_state(_valid)
+    check('load_state valid file loads its real last_reported_at (control)',
+          _s['last_reported_at'], 12345.0)
+
+# --- throughput -----------------------------------------------------------
+def closed_at(day, **kw):
+    kw['updated_at'] = day + 'T12:00:00Z'
+    return issue(**kw)
+
+
+TP_CLOSED = [
+    closed_at('2026-09-20', id='c1', labels=['release:acme-app-v0.15.0']),
+    closed_at('2026-09-19', id='c2'),
+    closed_at('2026-08-01', id='c3'),                      # outside 28d
+    closed_at('2026-09-19', id='c4', labels=['resource-watch']),  # auto-filed
+]
+TAG_DATES = [((0, 15, 0), '2026-09-20'), ((0, 14, 1), '2026-09-19'),
+             ((0, 12, 0), '2026-09-11'), ((0, 5, 0), '2026-03-04')]
+
+TP = rm.compute_throughput([], TP_CLOSED, TAG_DATES, '2026-09-21', (0, 16, 0),
+                           convention_start='2026-09-20')
+check('closed_7d excludes auto-filed', TP['closed_7d'], 2)
+check('closed_28d excludes the old one', TP['closed_28d'], 2)
+check('in_release_7d', TP['in_release_7d'], 1)
+check('tags_7d', TP['tags_7d'], 2)
+check('tags_28d excludes the March tag', TP['tags_28d'], 3)
+
+# MUST-MISS: during warm-up the share is ABSENT, not 0.0. A zero would read as
+# a measured finding when its true cause is the convention's age.
+check('share is None during warm-up',
+      rm.compute_throughput([], TP_CLOSED, [], '2026-09-21', None,
+                            convention_start='2026-09-20')['on_plan_share_14d'],
+      None)
+# 2026-10-04 is exactly CONVENTION_START + WARMUP_DAYS, the first day the
+# claim is allowed. The 14-day window then reaches back to 2026-09-20 and
+# catches c1 (release-labelled) but not c2, so the share is 1.0.
+AFTER = rm.compute_throughput([], TP_CLOSED, [], '2026-10-04', None,
+                              convention_start='2026-09-20')
+check('share is a float on the unlock day', isinstance(AFTER['on_plan_share_14d'], float), True)
+check('share value', AFTER['on_plan_share_14d'], 1.0)
+
+# The curve is the in-flight open count per day, reconstructed from updated_at
+# on the version's CURRENT set. Six points, most recent last.
+CURVE_OPEN = [tagged('v0.16.0', id='o1'), tagged('v0.16.0', id='o2')]
+CURVE_CLOSED = [tagged('v0.16.0', id='c9', updated_at='2026-09-21T09:00:00Z')]
+CV = rm.compute_throughput(CURVE_OPEN, CURVE_CLOSED, [], '2026-09-21', (0, 16, 0),
+                           convention_start='2026-09-20')
+check('curve has six points', len(CV['curve']), 6)
+check('curve starts at the full set', CV['curve'][0], 3)
+check('curve ends after the close', CV['curve'][-1], 2)
+# MUST-MISS: with no in-flight version there is no curve to draw.
+check('no curve without an in-flight version',
+      rm.compute_throughput(CURVE_OPEN, CURVE_CLOSED, [], '2026-09-21', None,
+                            convention_start='2026-09-20')['curve'], [])
+
+# --- fix round 3: convention_start has ONE source, not two ----------------
+# compute_throughput used to read the hardcoded module CONVENTION_START while
+# evaluate() read state['convention_start'] -- an unparseable or future state
+# value suppressed condition 3 permanently while the throughput share (still
+# keyed off the module constant) came back as a real number, so the board's
+# "no on-plan claim yet" disclosure never printed to explain why. One
+# parameter, passed by main() as st['convention_start'], now governs both.
+FUTURE_CS = '2027-01-01'
+# '2026-10-04' is the unlock day used by the AFTER fixture above -- the one
+# date, given TP_CLOSED's fixture dates, where the DEFAULT convention_start
+# yields a real (non-None) share. Reused here so the future-vs-default
+# comparison below isolates convention_start as the only variable.
+TP_FUTURE = rm.compute_throughput([], TP_CLOSED, TAG_DATES, '2026-10-04', (0, 16, 0),
+                                  convention_start=FUTURE_CS)
+check('future convention_start suppresses the share (post real-warmup date)',
+      TP_FUTURE['on_plan_share_14d'], None)
+
+FUTURE_MODEL = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b')],
+                              [], [(0, 15, 0)])
+FUTURE_MODEL['throughput'] = TP_FUTURE
+# convention_start threaded onto the model (fix round 1/2, github-cnzq7):
+# without it render_board can't tell this fixture apart from one with no
+# convention_start at all, and the date-in-the-board assertion below would
+# be checking nothing real.
+FUTURE_MODEL['convention_start'] = FUTURE_CS
+check('condition 3 stays silent when state convention_start is in the future',
+      3 in conds(FUTURE_MODEL, state(convention_start=FUTURE_CS), today='2026-10-04'), False)
+future_board = rm.render_board(FUTURE_MODEL, [])
+# Strengthened (fix round 2): the phrase alone passed even when render_board
+# silently substituted the WRONG date (today(), not FUTURE_CS) for a missing
+# model['convention_start'] -- this checks the actual date that was
+# substituted, not just that some suppression note printed.
+check('board prints the suppression note with the future convention_start',
+      'convention started %s' % FUTURE_CS in future_board, True)
+
+# MUST-HIT control: the SAME today, with the DEFAULT convention_start, yields
+# a real share and no suppression note -- proving the future state value
+# (not the date alone) is what caused the silence above.
+TP_DEFAULT = rm.compute_throughput([], TP_CLOSED, TAG_DATES, '2026-10-04', (0, 16, 0),
+                                   convention_start='2026-09-20')
+check('control — default convention_start yields a real share on the same date',
+      isinstance(TP_DEFAULT['on_plan_share_14d'], float), True)
+DEFAULT_MODEL = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b')],
+                               [], [(0, 15, 0)])
+DEFAULT_MODEL['throughput'] = TP_DEFAULT
+# Matches the '2026-09-20' passed to TP_DEFAULT's compute_throughput above --
+# this fixture's semantic convention_start, not a guess (fix round 2).
+DEFAULT_MODEL['convention_start'] = '2026-09-20'
+default_board = rm.render_board(DEFAULT_MODEL, [])
+check('control — board omits the suppression note once a real share exists',
+      'no on-plan claim yet' in default_board, False)
+
+# --- renderers ------------------------------------------------------------
+BOARD_MODEL = rm.build_model(OPEN, CLOSED, TAGS)
+BOARD_MODEL['throughput'] = TP
+BOARD_CONDS = rm.evaluate(BOARD_MODEL, state(), '2026-11-01')
+
+blob = rm.render_json(BOARD_MODEL, BOARD_CONDS)
+parsed = json.loads(blob)
+check('json has conditions', isinstance(parsed['conditions'], list), True)
+check('json in_flight is a string', parsed['in_flight'], 'v0.16.0')
+check('json planned is a list of strings', parsed['planned'], ['v0.18.0'])
+check('json hotfix count', parsed['hotfix_count'], 2)
+# The board distinguishes "no baseline yet" from "baselined, clean" -- the
+# JSON surface (the spec's PRIMARY output) must carry the same distinction,
+# or a future console page built on it reintroduces the defect.
+check('json baseline absent when unmeasured', parsed.get('baseline'), None)
+BOARD_MODEL_BASELINED_JSON = dict(BOARD_MODEL)
+BOARD_MODEL_BASELINED_JSON['baseline'] = ['f-business', 'b-cred', 't-dns']
+parsed_baselined = json.loads(rm.render_json(BOARD_MODEL_BASELINED_JSON, BOARD_CONDS))
+check('json baseline present when measured', parsed_baselined.get('baseline'),
+      ['f-business', 'b-cred', 't-dns'])
+
+board = rm.render_board(BOARD_MODEL, BOARD_CONDS)
+check('board names the cut version', 'cut v0.15.0' in board, True)
+check('board shows the hotfix queue', 'HOTFIX QUEUE' in board, True)
+check('board says cuttable independently', 'cuttable independently' in board.lower(), True)
+# MUST-MISS: with no baseline the board says so rather than claiming +0.
+check('board never claims +0 without a baseline', '+0' in board, False)
+check('board says no baseline yet', 'no baseline yet' in board, True)
+check('board reports tags cut', 'tags cut' in board, True)
+
+# --- READ-ONLY: bin/roadmap must never be able to mutate bd ---------------
+# STRUCTURAL, not a grep. `evaluate()` legitimately PRINTS the string
+# "bd label add <id> release:..." as remediation text, so a substring search
+# would fail on help text while telling you nothing about what actually runs.
+# This walks the AST and inspects the argv literal of every subprocess.run.
+
+# Every subcommand this tool can ever run reaches a subprocess as a string
+# inside a LIST LITERAL -- `['list', '--status=open', …]` handed to _bd, or
+# `['git', '-C', …]` handed straight to subprocess.run. So walking every list
+# literal in the module covers both, where walking subprocess.run call sites
+# would miss the _bd indirection entirely.
+WRITE_VERBS = {'label', 'close', 'create', 'update', 'defer', 'compact',
+               'gc', 'prune', 'dep', 'remember', 'edit', 'push', 'commit', 'tag'}
+literals = [
+    [e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+    for node in ast.walk(ast.parse(open(MODULE_PATH).read()))
+    if isinstance(node, ast.List)
+]
+tokens = {tok for lit in literals for tok in lit}
+
+# MUST-HIT control: if the walk finds nothing, the assertion below is vacuous
+# and would pass against a file that shells out freely. 'list' must be there.
+check('control — AST walk found the read verb', 'list' in tokens, True)
+check('control — AST walk found the git read', 'for-each-ref' in tokens, True)
+check('no write verb reaches any argv literal',
+      sorted(tokens & WRITE_VERBS), [])
+# Caps: the unscheduled section prints at most three rows plus a pointer.
+# The old assertion used a 2-row fixture and `<= 3`, so a version printing
+# ZERO rows would also have passed. Rebuild it with a 5-row fixture, assert
+# EXACTLY 3 rows, and assert the "…N more" pointer names the hidden count.
+UNSCHED_MANY = [issue(id='u%d' % k, issue_type='feature', priority=2, title='item %d' % k)
+               for k in range(5)]
+UNSCHED_MODEL = rm.build_model(UNSCHED_MANY, [], [])
+UNSCHED_MODEL['throughput'] = {}
+unsched_board = rm.render_board(UNSCHED_MODEL, [])
+unsched_section = unsched_board.split('UNSCHEDULED')[1].split('THROUGHPUT')[0]
+check('board caps unscheduled at exactly 3 rows',
+      unsched_section.count('\n    P'), 3)
+check('board shows the …more pointer for unscheduled overflow',
+      '…2 more · /roadmap unscheduled' in unsched_section, True)
+
+# --- creep: three states, not two ------------------------------------------
+# A model carrying a baseline must NOT say "no baseline yet" -- that would
+# report an absence of measurement where a measurement happened and found
+# nothing.
+BOARD_BASELINED = dict(BOARD_MODEL)
+BOARD_BASELINED['baseline'] = ['f-business', 'b-cred', 't-dns']
+board_b = rm.render_board(BOARD_BASELINED, [])
+check('baselined board does not claim no baseline', 'no baseline yet' in board_b, False)
+check('baselined board reports a clean measurement',
+      'none since baseline (3 issues)' in board_b, True)
+# Control: without a baseline key the original wording still appears, proving
+# the branch is selecting rather than always taking one arm.
+check('unbaselined board still says no baseline yet',
+      'no baseline yet' in rm.render_board(BOARD_MODEL, []), True)
+
+# Fourth state: NO in-flight version at all. "Nothing is in flight" and "in
+# flight but unbaselined" are different facts -- the old code printed
+# "no baseline yet" for both, conflating them.
+no_inflight_board = rm.render_board(EMPTY, [])
+check('creep says n/a when nothing is in flight',
+      'creep:   n/a — no version in flight' in no_inflight_board, True)
+check('creep n/a board does not say no baseline yet',
+      'no baseline yet' in no_inflight_board, False)
+
+# --- fix round 1 of 5: refresh_baselines gates on the cut tag advancing ---
+# The spec is explicit, twice: condition 2 CANNOT fire on v0.16.0, because it
+# became in-flight before this tool existed and has no plan-at-cut-time to
+# measure against. Gating on "first time this key is seen" instead of "the
+# cut tag advanced" baselines whatever happens to be in flight on the FIRST
+# run -- an arbitrary moment -- which produces exactly the false-clean signal
+# `no baseline yet` exists to prevent.
+
+# MUST-MISS: a state file with no prior history (`last_cut` absent) writes NO
+# baseline for the in-flight version, and records where the tag train stands.
+RB_MODEL = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b')],
+                          [], [(0, 15, 0)])
+_rb1 = state()
+_rb1_out = rm.refresh_baselines(RB_MODEL, _rb1)
+check('fresh state (no last_cut) writes no baseline', _rb1_out['baselines'], {})
+check('fresh state records the current cut as last_cut', _rb1_out['last_cut'], '0.15.0')
+
+# MUST-MISS: last_cut already equal to the model's current cut -- no tag was
+# cut since the previous run, so no baseline is written.
+_rb2 = state(last_cut='0.15.0')
+_rb2_out = rm.refresh_baselines(RB_MODEL, _rb2)
+check('unchanged cut writes no baseline', _rb2_out['baselines'], {})
+check('unchanged cut leaves last_cut alone', _rb2_out['last_cut'], '0.15.0')
+
+# MUST-HIT control: last_cut OLDER than the model's current cut -- the tag
+# train advanced since the last run, so the in-flight version's CURRENT set
+# becomes its baseline. Without this control the fix would be
+# indistinguishable from deleting the function outright.
+_rb3 = state(last_cut='0.14.0')
+_rb3_out = rm.refresh_baselines(RB_MODEL, _rb3)
+check('advanced cut updates last_cut', _rb3_out['last_cut'], '0.15.0')
+check('advanced cut baselines the in-flight version at its current set',
+      _rb3_out['baselines'].get('0.16.0'), ['a'])
+
+# MUST-MISS: same advancing-cut scenario, but a baseline already exists for
+# that version -- it must not be overwritten (the pin command, or an earlier
+# refresh, already recorded the plan).
+_rb4 = state(last_cut='0.14.0', baselines={'0.16.0': ['already']})
+_rb4_out = rm.refresh_baselines(RB_MODEL, _rb4)
+check('existing baseline is not overwritten', _rb4_out['baselines']['0.16.0'], ['already'])
+check('last_cut still advances even when the baseline was not written',
+      _rb4_out['last_cut'], '0.15.0')
+
+with tempfile.TemporaryDirectory() as _d:
+    # load_state / save_state round-trip the new last_cut field.
+    _rb_path = os.path.join(_d, 'state.json')
+    rm.save_state(_rb_path, {'last_reported_at': 0.0, 'convention_start': '2026-09-20',
+                             'baselines': {}, 'last_cut': '0.15.0'})
+    _rb_loaded = rm.load_state(_rb_path)
+    check('save/load round-trip: last_cut', _rb_loaded['last_cut'], '0.15.0')
+
+# --- fix round 1: IN FLIGHT lists every item, PLANNED is features-only ----
+# Spec: "In-flight lists every item -- it is the working set. Planned lists
+# features only, collapsed." The old cap of 6 with no pointer silently hid
+# items; live, v0.16.0 has 9 open leaves and the board said nothing about it.
+
+# MUST-HIT: an in-flight version with 9 open leaves renders all 9, untruncated.
+NINE_OPEN = [tagged('v0.20.0', id='n%d' % k, issue_type='task', priority=3, title='t%d' % k)
+            for k in range(9)]
+NINE_MODEL = rm.build_model(NINE_OPEN, [], [(0, 19, 0)])
+NINE_MODEL['throughput'] = {}
+nine_board = rm.render_board(NINE_MODEL, [])
+in_flight_section = nine_board.split('IN FLIGHT')[1].split('PLANNED')[0]
+check('in-flight section renders all 9 rows, no cap',
+      in_flight_section.count('\n        P'), 9)
+check('in-flight section has no …more pointer', '…' in in_flight_section, False)
+
+# MUST-HIT: a planned version mixing features with non-features shows only
+# the features, plus a pointer naming the hidden count.
+MIX_PLANNED = [
+    tagged('v0.16.0', id='a', issue_type='task', priority=3, title='keeps inflight nonempty'),
+    tagged('v0.17.0', id='f1', issue_type='feature', priority=2, title='feat one'),
+    tagged('v0.17.0', id='t1', issue_type='task', priority=3, title='task one'),
+    tagged('v0.17.0', id='c1', issue_type='chore', priority=3, title='chore one'),
+]
+MIX_MODEL = rm.build_model(MIX_PLANNED, [], [(0, 15, 0)])
+MIX_MODEL['throughput'] = {}
+mix_board = rm.render_board(MIX_MODEL, [])
+planned_section = mix_board.split('PLANNED')[1].split('UNSCHEDULED')[0]
+check('planned shows only the feature', 'feat one' in planned_section, True)
+check('planned hides the task', 'task one' in planned_section, False)
+check('planned hides the chore', 'chore one' in planned_section, False)
+check('planned names the hidden count', '…2 more · /roadmap v0.17.0' in planned_section, True)
+
+# MUST-MISS control: a planned version whose rows are all features and all
+# fit prints NO …more pointer -- proves the pointer is conditional, not
+# always-on.
+ALLFIT_PLANNED = [
+    tagged('v0.16.0', id='a', issue_type='task', priority=3, title='keeps inflight nonempty'),
+    tagged('v0.17.0', id='f1', issue_type='feature', priority=2, title='feat one'),
+    tagged('v0.17.0', id='f2', issue_type='feature', priority=2, title='feat two'),
+]
+ALLFIT_MODEL = rm.build_model(ALLFIT_PLANNED, [], [(0, 15, 0)])
+ALLFIT_MODEL['throughput'] = {}
+allfit_board = rm.render_board(ALLFIT_MODEL, [])
+check('planned with everything shown has no …more pointer (control)',
+      '…' in allfit_board.split('PLANNED')[1].split('UNSCHEDULED')[0], False)
+
+# --- fix round 1: the third creep arm, exercised through render_board ------
+# When condition 2 fires, its own lines carry the creep report -- the board
+# must print NEITHER "no baseline yet" NOR "none since baseline", or the
+# reader would see the measurement stated twice, once correctly and once as
+# a stale placeholder.
+CREEP_COND = [{'id': 2, 'bypass': False,
+              'lines': ['SCOPE CREEP -- v0.16.0 was 1 issues at baseline, now 2 (+1 added).']}]
+CREEP_FIRING_MODEL = dict(BOARD_MODEL)
+CREEP_FIRING_MODEL['baseline'] = ['x']
+creep_board = rm.render_board(CREEP_FIRING_MODEL, CREEP_COND)
+check('condition-2 board omits "no baseline yet"', 'no baseline yet' in creep_board, False)
+check('condition-2 board omits "none since baseline"',
+      'none since baseline' in creep_board, False)
+
+
+# --- fix round 4: main() end to end, via monkeypatched load_issues/tag_dates
+# These exercise real CLI-level behaviour (argument parsing, exit codes,
+# stdout/stderr, the on-disk state file) without shelling to bd or git.
+def _run_main(argv, open_issues=None, closed_issues=None, tag_dates=None,
+              raise_unavailable=None):
+    orig_li, orig_ltd = rm.load_issues, rm.load_tag_dates
+    # main() (Task B3) now calls configure(load_config(...)) before
+    # load_issues(). Stub load_config the same way load_issues/load_tag_dates
+    # are stubbed below -- a real load_config() would walk up from cwd
+    # looking for an actual roadmap.toml on disk, which does not exist in
+    # this test environment (by design) and would make every _run_main call
+    # take the RoadmapUnavailable branch regardless of what the test asked
+    # for. Returning TEST_CFG keeps CONFIG exactly what the suite already
+    # configured at import time.
+    orig_lc = rm.load_config
+
+    rm.load_config = lambda *a, **kw: dict(TEST_CFG)
+
+    def _li(*a, **kw):
+        if raise_unavailable is not None:
+            raise rm.RoadmapUnavailable(raise_unavailable)
+        return (open_issues or [], closed_issues or [])
+
+    rm.load_issues = _li
+    rm.load_tag_dates = lambda *a, **kw: (tag_dates or [])
+    out_buf, err_buf = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+            rc = rm.main(argv)
+    finally:
+        rm.load_issues = orig_li
+        rm.load_tag_dates = orig_ltd
+        rm.load_config = orig_lc
+    return rc, out_buf.getvalue(), err_buf.getvalue()
+
+
+# Finding 1: an unavailable bd/git must not render identically to a clean
+# board. load_state is never reached on this path, so no --state is needed.
+_rc, _out, _err = _run_main(['--today', '2026-11-01'], raise_unavailable='bd exited 1')
+check('unavailable: exits 0 (fail open)', _rc, 0)
+check('unavailable: reason reaches stderr', 'bd exited 1' in _err, True)
+check('unavailable: stdout carries nothing in text mode', _out.strip(), '')
+
+_rc, _out, _err = _run_main(['--json', '--today', '2026-11-01'],
+                            raise_unavailable='bd exited 1')
+check('unavailable --json: exits 0', _rc, 0)
+_parsed_unavail = json.loads(_out)
+check('unavailable --json: carries the reason',
+      _parsed_unavail.get('unavailable'), 'bd exited 1')
+
+# MUST-MISS control: a successful run's --json output carries no
+# 'unavailable' key at all -- proves the key is conditional, not always-on.
+with tempfile.TemporaryDirectory() as _d:
+    _ok_state = os.path.join(_d, 'state.json')
+    _rc, _out, _err = _run_main(['--json', '--state', _ok_state, '--today', '2026-11-01'],
+                                open_issues=[], closed_issues=[], tag_dates=[])
+    check('successful run: exits 0', _rc, 0)
+    _parsed_ok = json.loads(_out)
+    check('successful run: no unavailable key (control)',
+          'unavailable' in _parsed_ok, False)
+
+# Finding 5: pin must reject a version that does not exist, BEFORE writing
+# anything -- a transposed digit must not read as success.
+PIN_OPEN = [tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b')]
+PIN_TAG_DATES = [((0, 15, 0), '2026-09-01')]
+
+with tempfile.TemporaryDirectory() as _d:
+    _pin_state = os.path.join(_d, 'state.json')
+    _rc, _out, _err = _run_main(['pin', 'v0.17.0', '--state', _pin_state,
+                                 '--today', '2026-11-01'],
+                                open_issues=PIN_OPEN, tag_dates=PIN_TAG_DATES)
+    check('pin on a real version exits 0', _rc, 0)
+    check('pin on a real version reports pinned', 'pinned v0.17.0' in _out, True)
+    with open(_pin_state) as _fh:
+        _saved = json.load(_fh)
+    check('pin on a real version writes a baseline',
+          _saved.get('baselines', {}).get('0.17.0'), ['b'])
+
+with tempfile.TemporaryDirectory() as _d:
+    _pin_state2 = os.path.join(_d, 'state.json')
+    _rc, _out, _err = _run_main(['pin', 'v9.99.9', '--state', _pin_state2,
+                                 '--today', '2026-11-01'],
+                                open_issues=PIN_OPEN, tag_dates=PIN_TAG_DATES)
+    check('pin on an absent version exits 2', _rc, 2)
+    check('pin on an absent version reports no such version',
+          'no such version' in _out, True)
+    check('pin on an absent version writes nothing to the state file',
+          os.path.exists(_pin_state2), False)
+
+# --- planning proposer (github-xs23f) -------------------------------------
+# Descent is the UNION of two encodings and NEITHER ALONE IS SUFFICIENT.
+# Measured on the live DB 2026-09-21: 3 open issues carry a `parent` whose id
+# is not a prefix of theirs (github-xvgt -> github-gaek -> github-c8xl), and 2
+# carry a dotted id with NO parent field (launch-1.21, launch-1.22) -- and both
+# of THOSE hang off launch-1, the epic gating v0.18.0. Picking either encoding
+# alone silently drops real work from the proposal.
+
+def kid(pid, iid, **kw):
+    """A child by the PARENT FIELD whose id deliberately shares no prefix."""
+    kw.setdefault('parent', pid)
+    kw.setdefault('id', iid)
+    return issue(**kw)
+
+
+DESC = [
+    issue(id='ep-1', issue_type='epic', priority=2),
+    issue(id='ep-1.1', priority=3),                     # dotted, no parent field
+    issue(id='ep-1.1.1', priority=3),                   # dotted grandchild
+    kid('ep-1', 'other-aaa', priority=3),               # parent field, unrelated id
+    kid('other-aaa', 'other-bbb', priority=3),          # two hops via parent field
+    issue(id='unrelated', priority=1),
+]
+BYID = {i['id']: i for i in DESC}
+
+for iid in ('ep-1.1', 'ep-1.1.1', 'other-aaa', 'other-bbb'):
+    check('descends_from hits ' + iid, rm.descends_from(BYID[iid], 'ep-1', BYID), True)
+for iid in ('unrelated', 'ep-1'):
+    check('descends_from skips ' + iid, rm.descends_from(BYID[iid], 'ep-1', BYID), False)
+
+# A parent cycle must terminate rather than hang. Nothing in bd should create
+# one, but "should not" is not a termination proof.
+CYC = {'a': issue(id='a', parent='b'), 'b': issue(id='b', parent='a')}
+check('parent cycle terminates', rm.descends_from(CYC['a'], 'ep-1', CYC), False)
+
+PROPOSE_OPEN = [
+    tagged('v0.18.0', id='ep-1', issue_type='epic', priority=2),
+    tagged('v0.18.0', id='ep-2', issue_type='epic', priority=2),
+    issue(id='ng-1', issue_type='epic', priority=2),          # gates NOTHING
+    issue(id='ep-1.1', issue_type='feature', priority=2),
+    issue(id='ep-1.2', issue_type='bug', priority=1),
+    tagged('v0.16.0', id='ep-1.3', priority=1),               # already versioned
+    kid('ep-2', 'zz-aaa', issue_type='task', priority=3),
+    issue(id='ng-1.1', priority=0),                           # child of a non-gating epic
+    issue(id='noise', priority=1, labels=['resource-watch']),  # auto-filed
+]
+PM = rm.build_model(PROPOSE_OPEN, [], [(0, 15, 0)])
+PROP = [i['id'] for i in rm.propose(PROPOSE_OPEN, PM, (0, 18, 0))]
+
+# Ranked by _rank(): P1 bug, then P2 feature, then P3 task.
+check('proposes unversioned descendants of the gating epics, ranked',
+      PROP, ['ep-1.2', 'ep-1.1', 'zz-aaa'])
+check('must-miss: an already-versioned descendant', 'ep-1.3' in PROP, False)
+check('must-miss: a descendant of a NON-gating epic', 'ng-1.1' in PROP, False)
+check('must-miss: an auto-filed row', 'noise' in PROP, False)
+check('must-miss: the gating epic itself', 'ep-1' in PROP, False)
+# MUST-HIT control: the parent-field child with an unrelated id IS proposed.
+# Prefix matching alone would drop it.
+check('must-hit: parent-field child with an unrelated id', 'zz-aaa' in PROP, True)
+# MUST-HIT control: the dotted child with no parent field IS proposed.
+# Parent-field matching alone would drop it -- the launch-1.22 case.
+check('must-hit: dotted child with no parent field', 'ep-1.1' in PROP, True)
+
+# A version whose gating epics have no unversioned descendants proposes
+# nothing -- and that emptiness is a RESULT (ready to cut), handled by the
+# caller, not an error here.
+check('no gating epics -> no candidates', rm.propose(PROPOSE_OPEN, PM, (0, 16, 0)), [])
+
+# Cap: 7 rows plus a remainder the caller can report.
+MANY = list(PROPOSE_OPEN) + [issue(id='ep-1.x%d' % n, priority=3) for n in range(8)]
+MANY_M = rm.build_model(MANY, [], [(0, 15, 0)])
+check('proposal caps at 7', len(rm.propose(MANY, MANY_M, (0, 18, 0))), 7)
+check('proposal reports the true total',
+      rm.propose_total(MANY, MANY_M, (0, 18, 0)), 11)
+
+# --- condition 6: a tag was cut since the last run ------------------------
+C6 = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b')],
+                    [], [(0, 15, 0)])
+C6_ADVANCED = dict(C6)
+C6_ADVANCED['cut_advanced'] = True
+check('c6 fires when the cut advanced', 6 in conds(C6_ADVANCED, state()), True)
+check('c6 names the version to plan',
+      'v0.17.0' in ' '.join(conds(C6_ADVANCED, state())[6]['lines']), True)
+check('c6 points at the plan verb',
+      'roadmap plan' in ' '.join(conds(C6_ADVANCED, state())[6]['lines']), True)
+# MUST-MISS control: without the flag it stays silent, so the condition is
+# keyed on the cut rather than firing on every run.
+check('c6 silent when the cut did not advance', 6 in conds(C6, state()), False)
+
+# refresh_baselines must REPORT the advance, not just act on it -- it mutates
+# last_cut, so by the time evaluate() runs the advance is otherwise invisible.
+_rb_fresh = state()
+_m1 = rm.build_model([tagged('v0.16.0', id='a')], [], [(0, 15, 0)])
+rm.refresh_baselines(_m1, _rb_fresh)
+check('first run does not report an advance', _m1.get('cut_advanced'), False)
+
+_rb_stale = state(last_cut='0.14.1')
+_m2 = rm.build_model([tagged('v0.16.0', id='a')], [], [(0, 15, 0)])
+rm.refresh_baselines(_m2, _rb_stale)
+check('an advanced cut reports it', _m2.get('cut_advanced'), True)
+
+_rb_same = state(last_cut='0.15.0')
+_m3 = rm.build_model([tagged('v0.16.0', id='a')], [], [(0, 15, 0)])
+rm.refresh_baselines(_m3, _rb_same)
+check('an unchanged cut does not report an advance', _m3.get('cut_advanced'), False)
+
+# --- config layer ---------------------------------------------------------
+def write_cfg(text, name='roadmap.toml'):
+    """-> (dir, path). Each call gets its own tempdir so walk-up tests do
+    not see each other's files."""
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, name)
+    with open(p, 'w') as fh:
+        fh.write(text)
+    return d, p
+
+
+GOOD = '''
+workspace = "."
+tag_repo = "."
+release_namespace = "acme-app"
+convention_start = "2026-10-15"
+auto_label_prefixes = ["noise:"]
+'''
+
+_d, _p = write_cfg(GOOD)
+_cfg = rm.load_config(_p)
+check('namespace loads', _cfg['release_namespace'], 'acme-app')
+check('convention_start loads', _cfg['convention_start'], '2026-10-15')
+check('prefixes load as a tuple', _cfg['auto_label_prefixes'], ('noise:',))
+# Relative paths resolve against the CONFIG FILE, not the cwd -- otherwise
+# the hook (which runs from an arbitrary cwd) and the CLI disagree.
+check('workspace resolves against the config file',
+      _cfg['workspace'], os.path.realpath(_d))
+
+# Discovery: walk UP from a nested dir.
+#
+# Compare against the REALPATH form. find_config resolves symlinks, and on
+# macOS tempfile.mkdtemp() hands back /var/... while /var is a symlink to
+# /private/var -- so a naive `== _p` fails here for a reason that has nothing
+# to do with the code under test.
+_nested = os.path.join(_d, 'a', 'b')
+os.makedirs(_nested, exist_ok=True)
+_p_real = os.path.join(os.path.realpath(_d), 'roadmap.toml')
+check('walk-up finds the config', rm.find_config(start=_nested), _p_real)
+
+# Discovery: $ROADMAP_CONFIG wins over the walk-up. No realpath here --
+# the override is returned verbatim, by design, so a caller can point at a
+# config through a symlink deliberately.
+_d2, _p2 = write_cfg(GOOD)
+check('env override wins',
+      rm.find_config(start=_nested, env={'ROADMAP_CONFIG': _p2}), _p2)
+
+# MUST-MISS: no config anywhere is RoadmapUnavailable, not a crash and not
+# an empty board. An unconfigured install has to render as "unavailable".
+_empty = tempfile.mkdtemp()
+check('no config found', rm.find_config(start=_empty), None)
+try:
+    rm.load_config(start=_empty, env={})
+    check('missing config raises', 'no raise', 'RoadmapUnavailable')
+except rm.RoadmapUnavailable as exc:
+    check('missing config names the remedy', 'roadmap init' in str(exc), True)
+
+# A typo must be REJECTED BY NAME. Silently ignoring it yields an empty
+# board -- the exact silent-wrong-answer this design rejected.
+_d3, _p3 = write_cfg(GOOD + '\nrelease_namespc = "oops"\n')
+try:
+    rm.load_config(_p3)
+    check('unknown key raises', 'no raise', 'RoadmapUnavailable')
+except rm.RoadmapUnavailable as exc:
+    check('unknown key is named', 'release_namespc' in str(exc), True)
+
+# A missing REQUIRED key is likewise named.
+_d4, _p4 = write_cfg('workspace = "."\ntag_repo = "."\n')
+try:
+    rm.load_config(_p4)
+    check('missing required key raises', 'no raise', 'RoadmapUnavailable')
+except rm.RoadmapUnavailable as exc:
+    check('missing key is named', 'release_namespace' in str(exc), True)
+
+# An absent convention_start seeds today -- same rule as load_state.
+_d5, _p5 = write_cfg('workspace = "."\ntag_repo = "."\n'
+                     'release_namespace = "acme-app"\n')
+check('absent convention_start seeds today',
+      rm.load_config(_p5, today='2027-03-01')['convention_start'], '2027-03-01')
+
+# A non-date convention_start is rejected rather than silently disabling
+# warm-up (warmup_active swallows a parse error and returns True forever).
+_d6, _p6 = write_cfg(GOOD.replace('"2026-10-15"', '"last tuesday"'))
+try:
+    rm.load_config(_p6)
+    check('bad date raises', 'no raise', 'RoadmapUnavailable')
+except rm.RoadmapUnavailable as exc:
+    check('bad date is named', 'convention_start' in str(exc), True)
+
+# --- config layer: TYPES, not just names -----------------------------------
+# Names alone are not enough: `workspace = 42` or `auto_label_prefixes = 5`
+# must not escape as a raw TypeError. main() catches only RoadmapUnavailable
+# (bin/roadmap:~694), so any other exception type here would crash the
+# SessionStart hook instead of failing open silently -- the exact thing this
+# layer exists to prevent. check_type_rejected asserts BOTH that the raised
+# exception is specifically RoadmapUnavailable (not merely "something") and
+# that its message names the offending key.
+def check_type_rejected(label, toml_text, key):
+    _d, _p = write_cfg(toml_text)
+    try:
+        rm.load_config(_p)
+        check(label + ' raises', 'no raise', 'RoadmapUnavailable')
+        return
+    except Exception as exc:
+        # A bare `except RoadmapUnavailable` here would not prove a
+        # TypeError is gone -- it would just not catch it, and the test
+        # would blow up with the same traceback Step 2 showed for a missing
+        # attribute. Catching Exception and checking the type is what
+        # actually proves no TypeError (or anything else) escapes.
+        check(label + ' is RoadmapUnavailable', isinstance(exc, rm.RoadmapUnavailable), True)
+        check(label + ' names the key', key in str(exc), True)
+
+
+check_type_rejected('workspace wrong type',
+                     GOOD.replace('workspace = "."', 'workspace = 42'),
+                     'workspace')
+check_type_rejected('tag_repo wrong type',
+                     GOOD.replace('tag_repo = "."', 'tag_repo = ["a", "b"]'),
+                     'tag_repo')
+check_type_rejected('release_namespace wrong type',
+                     GOOD.replace('release_namespace = "acme-app"', 'release_namespace = 42'),
+                     'release_namespace')
+check_type_rejected('auto_label_prefixes non-iterable',
+                     GOOD.replace('auto_label_prefixes = ["noise:"]', 'auto_label_prefixes = 5'),
+                     'auto_label_prefixes')
+check_type_rejected('auto_label_prefixes list of non-strings',
+                     GOOD.replace('auto_label_prefixes = ["noise:"]', 'auto_label_prefixes = [1, 2, 3]'),
+                     'auto_label_prefixes')
+
+# I1, upgraded to critical: a bare string must be rejected BY NAME, not
+# coerced. str.startswith() accepts a tuple, so tuple("noise:") silently
+# becomes ('n','o','i','s','e',':') -- a valid one-character-prefix filter
+# that drops most real labels ("security", "open-graph", "infra", "epic",
+# "needs-triage" all start with one of those six characters) with no error
+# at all. That is the precise silent-wrong-answer this whole config layer
+# exists to prevent, arriving through lenient parsing instead of a typo.
+check_type_rejected('auto_label_prefixes bare string',
+                     GOOD.replace('auto_label_prefixes = ["noise:"]', 'auto_label_prefixes = "noise:"'),
+                     'auto_label_prefixes')
+
+# MUST-MISS: a validator that rejects everything would pass every check
+# above. Confirm the valid fixture still loads, and that a real list of
+# prefixes still yields the tuple it always did.
+_dT7, _pT7 = write_cfg(GOOD)
+check('valid config still loads after type validation',
+      rm.load_config(_pT7)['release_namespace'], 'acme-app')
+_dT8, _pT8 = write_cfg(GOOD.replace('auto_label_prefixes = ["noise:"]',
+                                     'auto_label_prefixes = ["a:", "b:"]'))
+check('valid list of prefixes still loads as a tuple',
+      rm.load_config(_pT8)['auto_label_prefixes'], ('a:', 'b:'))
+
+# --- roadmap init -----------------------------------------------------------
+# A single-repo layout is the common case and must be UNAMBIGUOUS: the root
+# is a git repo with v* tags, so all three knobs collapse to one value.
+def fake_git(tags):
+    """A stand-in for subprocess.run over `git for-each-ref`."""
+    def run(argv, **kw):
+        class R:
+            returncode = 0
+            stdout = '\n'.join('2026-01-01 %s' % t for t in tags)
+        return R()
+    return run
+
+
+_root = tempfile.mkdtemp()
+# A REAL repo, not just an empty .git dir: cmd_init's own probe_layout call
+# below is never given the fake_git injection (cmd_init's signature takes no
+# `run` -- only probe_layout does), so it shells out to the real git binary.
+# An empty .git directory is not a repository at all -- `git for-each-ref`
+# exits 128 with empty stdout, which is indistinguishable from "found no
+# tags" and made this fixture silently exercise the ambiguous path instead
+# of the happy path it is named for. Verified directly: returncode 128,
+# stdout ''.
+_git_env = dict(os.environ, GIT_AUTHOR_NAME='test', GIT_AUTHOR_EMAIL='test@example.com',
+                GIT_COMMITTER_NAME='test', GIT_COMMITTER_EMAIL='test@example.com')
+subprocess.run(['git', 'init', '-q', _root], check=True, env=_git_env)
+subprocess.run(['git', '-C', _root, 'commit', '-q', '--allow-empty', '-m', 'init'],
+               check=True, env=_git_env)
+subprocess.run(['git', '-C', _root, 'tag', 'v1.2.0'], check=True, env=_git_env)
+_probe = rm.probe_layout(_root, run=fake_git(['v1.2.0']))
+check('single-repo workspace is the root', _probe['workspace'], '.')
+check('single-repo tag_repo is the root', _probe['tag_repo'], '.')
+check('namespace defaults to the dir name',
+      _probe['release_namespace'], os.path.basename(os.path.realpath(_root)))
+check('single-repo layout is unambiguous', _probe['ambiguous'], [])
+
+# --- probe_layout: git RAN but FAILED must not collapse into "no tags" ----
+# A repo that exists but is unreadable (corrupt .git, permissions, whatever)
+# fails DIFFERENTLY from a repo that legitimately has no v* tags yet -- the
+# first is fixed by repairing the repo, the second by adding a tag, and
+# telling a user with a broken repo to add a tag sends them chasing the
+# wrong fix. Both directions, per the fake_git stub idiom above.
+def rc_stub(returncode, stdout='', stderr=''):
+    def run(argv, **kw):
+        class R:
+            pass
+        R.returncode = returncode
+        R.stdout = stdout
+        R.stderr = stderr
+        return R()
+    return run
+
+
+# MUST-HIT: nonzero returncode with empty stdout -- exactly what a corrupt
+# or unreadable .git produces against the real git binary (confirmed while
+# fixing the _root fixture above: exit 128, stdout ''). The reason must name
+# the failure, not say "no semver v* tags".
+_probe_failed = rm.probe_layout(
+    _root, run=rc_stub(128, stdout='', stderr='fatal: bad object HEAD\n'))
+check('git-failed layout is ambiguous', _probe_failed['ambiguous'] != [], True)
+check('git failure is NOT reported as merely no-tags',
+      any('no semver v* tags' in r for r in _probe_failed['ambiguous']), False)
+check('git failure names the exit status',
+      any('128' in r for r in _probe_failed['ambiguous']), True)
+check('git failure surfaces stderr',
+      any('bad object HEAD' in r for r in _probe_failed['ambiguous']), True)
+
+# MUST-MISS: a clean run (returncode 0) with empty stdout is a REAL "no
+# tags yet" and must keep saying so -- a fix that reports failure for every
+# empty result would pass the must-hit above too, so this has to hold
+# separately.
+_probe_clean_empty = rm.probe_layout(_root, run=rc_stub(0, stdout=''))
+check('a clean git run with genuinely no tags still says so',
+      any('no semver v* tags' in r for r in _probe_clean_empty['ambiguous']), True)
+
+# A hanging git (subprocess.TimeoutExpired) must land in the same
+# could-not-read branch as a missing binary, not the no-tags branch either.
+def _timeout_run(argv, **kw):
+    raise subprocess.TimeoutExpired(cmd=argv, timeout=20)
+
+
+_probe_timeout = rm.probe_layout(_root, run=_timeout_run)
+check('a hanging git is reported as unreadable, not no-tags',
+      any('could not read git tags' in r for r in _probe_timeout['ambiguous']), True)
+check('the timeout report is not the no-tags message',
+      any('no semver v* tags' in r for r in _probe_timeout['ambiguous']), False)
+
+# MUST-HIT: a root that is NOT a git repo and has no tagged subdir cannot be
+# resolved, and init must REFUSE. Guessing here is approach B, which this
+# design rejected because a wrong guess renders a clean, empty board.
+_bare = tempfile.mkdtemp()
+_probe_bare = rm.probe_layout(_bare, run=fake_git([]))
+check('a bare directory is ambiguous', _probe_bare['ambiguous'] != [], True)
+
+_buf = io.StringIO()
+check('init refuses an ambiguous layout',
+      rm.cmd_init(_bare, '2027-03-01', _buf), 2)
+check('the refusal explains why', 'ambiguous' in _buf.getvalue().lower(), True)
+check('init wrote nothing on refusal',
+      os.path.exists(os.path.join(_bare, 'roadmap.toml')), False)
+
+# The happy path writes a file that load_config accepts -- a round trip,
+# not just "a file appeared".
+_buf2 = io.StringIO()
+check('init succeeds on a clear layout',
+      rm.cmd_init(_root, '2027-03-01', _buf2), 0)
+_written = rm.load_config(os.path.join(_root, 'roadmap.toml'))
+check('init seeds convention_start to today',
+      _written['convention_start'], '2027-03-01')
+check('the written config round-trips',
+      _written['release_namespace'], os.path.basename(os.path.realpath(_root)))
+check('init PRINTS what it found',
+      os.path.basename(os.path.realpath(_root)) in _buf2.getvalue(), True)
+
+# MUST-MISS: a second init must not silently clobber a config someone
+# hand-edited.
+_buf3 = io.StringIO()
+check('init refuses to overwrite', rm.cmd_init(_root, '2027-03-01', _buf3), 2)
+check('the overwrite refusal names --force', '--force' in _buf3.getvalue(), True)
+
+# --- decoupling scan ------------------------------------------------------
+# A property test, not an example test: no shipped file may name the
+# workspace this tool came from. The fixture rename above makes a surviving
+# literal fail a behavioural check; this catches one hiding in a comment,
+# a docstring or a default that no behavioural test happens to reach.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Built by concatenation, not spelled out whole: this very file is itself a
+# shipped file the walk below visits, so a needle written out in full would
+# make the scan trip over its own detector list -- a false hit indistinguish-
+# able from a real one. The runtime string value is identical either way.
+_COUPLED = ('ku' + 'ju', 'mac' + 'ole', 'shao' + 'lynx')
+
+
+def scan_tree(root, needles=_COUPLED):
+    """Walk `root` for shipped files and return a sorted list of
+    'relpath: needle' entries -- the exact walk -> filter -> read -> match
+    -> append pipeline the real gate runs, factored out so the must-hit and
+    must-miss fixtures below exercise the SAME code the real check uses,
+    not a decoupled reimplementation of its pieces (fix round 1: the old
+    must-hit checks tested the walk and the substring predicate separately,
+    and neither exercised `_hits.append` or the encoding path, so a broken
+    append or a swallowed read error would have passed both).
+
+    Filter: extension-based (.py/.md/.json/.toml/.yml) plus the exact
+    filename 'roadmap'. Known gap, not a live bug (both are clean today):
+    an extensionless future file -- a Makefile, a shell script with no
+    suffix -- is OUTSIDE this filter, same as LICENSE and .gitignore are
+    now.
+    """
+    hits = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        # .git is the real object store -- enormous, and its contents are
+        # handled by B7's orphan-branch squash, not this scan.
+        #
+        # .github was ALSO excluded here once (fix round 0, per the
+        # original brief) -- that was WRONG and has been reverted. .github
+        # is exactly where a CI workflow lands, task B7 adds
+        # .github/workflows/test.yml to this repo before publication, and
+        # a gate that cannot see into the one directory holding the CI
+        # config is not a gate. Do not restore this exclusion.
+        dirnames[:] = [d for d in dirnames if d not in ('.git', '__pycache__')]
+        for fn in filenames:
+            if not (fn.endswith(('.py', '.md', '.json', '.toml', '.yml'))
+                     or fn == 'roadmap'):
+                continue
+            path = os.path.join(dirpath, fn)
+            # A read failure must never read as "no hits" -- that is the
+            # exact false negative the old `except Exception: continue`
+            # produced for a file containing a coupled string plus one
+            # invalid UTF-8 byte (fix round 1). Read bytes and decode with
+            # errors='replace' so the scan still inspects the file's
+            # content instead of skipping it; a REPLACEMENT byte cannot
+            # hide a needle since none of the needles contain one. A file
+            # that cannot even be opened (permissions, vanished mid-walk)
+            # is left to raise -- a crashed suite is a loud failure, which
+            # is the point, where a silent skip would not be.
+            with open(path, 'rb') as fh:
+                text = fh.read().decode('utf-8', errors='replace').lower()
+            for needle in needles:
+                if needle in text:
+                    hits.append('%s: %s' % (os.path.relpath(path, root), needle))
+    return sorted(hits)
+
+
+check('no shipped file names the origin workspace', scan_tree(_ROOT), [])
+
+# --- scan_tree: end-to-end fixtures, planted OUTSIDE this repo ------------
+# Every fixture below lives in its own tempfile.mkdtemp(), never inside
+# _ROOT -- a test that writes into the tree it scans could leave a planted
+# file behind that fails the NEXT run for the wrong reason.
+
+# MUST-MISS: a tree of only clean files scans empty. Without this, a
+# scan_tree that returned every file it walked (or one hardcoded to always
+# find something) would pass the must-hit fixture below for the wrong
+# reason.
+_clean_root = tempfile.mkdtemp()
+with open(os.path.join(_clean_root, 'clean.py'), 'w', encoding='utf-8') as _fh:
+    _fh.write('# nothing coupled in this file\n')
+check('scan_tree: a clean tree scans empty (control)', scan_tree(_clean_root), [])
+
+# MUST-HIT, end to end: the planted hit sits under .github/workflows/ --
+# exactly where B7's CI workflow lands, and exactly the directory fix
+# round 0 excluded from the walk. This single assertion is what would have
+# caught that defect. Mixed case exercises the same lowercasing the real
+# scan relies on.
+_hit_root = tempfile.mkdtemp()
+_gh_dir = os.path.join(_hit_root, '.github', 'workflows')
+os.makedirs(_gh_dir)
+with open(os.path.join(_gh_dir, 'probe.yml'), 'w', encoding='utf-8') as _fh:
+    _fh.write('name: %s-MAIL\n' % _COUPLED[0].upper())
+_hit_result = scan_tree(_hit_root)
+check('scan_tree: a planted .github/workflows hit is found', len(_hit_result) > 0, True)
+check('scan_tree: the hit names the planted .github/workflows path',
+      any('.github' in h and 'workflows' in h for h in _hit_result), True)
+
+# Encoding case: a coupled string sitting beside one invalid UTF-8 byte
+# must still be reported -- the exact case the old bare
+# `except Exception: continue` swallowed into a false negative.
+_enc_root = tempfile.mkdtemp()
+with open(os.path.join(_enc_root, 'bad_encoding.py'), 'wb') as _fh:
+    _fh.write(('# %s-mail ' % _COUPLED[0]).encode('utf-8') + b'\xff\xfe')
+check('scan_tree: a coupled string beside an invalid byte is still caught',
+      len(scan_tree(_enc_root)) > 0, True)
+
+if FAILURES:
+    print('FAIL (%d)' % len(FAILURES))
+    for f in FAILURES:
+        print('  ' + f)
+    sys.exit(1)
+print('ok')

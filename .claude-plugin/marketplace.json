@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "beads-roadmap",
+  "metadata": {
+    "description": "A derived product roadmap over beads — versions, hotfix queue, unscheduled work, and a SessionStart cadence check that is silent when clean"
+  },
+  "owner": {
+    "name": "Kaimoku Technologies, LLC"
+  },
+  "plugins": [
+    {
+      "name": "roadmap",
+      "description": "A derived product roadmap over beads — versions, hotfix queue, unscheduled work, and a SessionStart cadence check that is silent when clean",
+      "version": "0.1.0",
+      "author": {
+        "name": "Kaimoku Technologies, LLC"
+      },
+      "source": "./",
+      "homepage": "https://github.com/Kaimoku-Technologies/beads-roadmap",
+      "tags": ["beads", "roadmap", "planning", "release-management"]
+    }
+  ]
+}

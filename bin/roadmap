@@ -1,0 +1,1035 @@
+#!/usr/bin/env python3
+"""roadmap -- a derived product roadmap over bd.
+
+WHY THIS EXISTS (github-4jmwr)
+------------------------------
+Measured 2026-09-21: 824 open bd issues, three release labels ever, NOTHING
+tagged above the version in flight, and 54 features/epics with no version at
+all -- including a P0. The planning horizon was zero. With 824 open rows a
+roadmap that must be VISITED will not be, so this renders one and a
+SessionStart hook pushes it.
+
+Everything here is DERIVED. The tool never writes to bd: the hotfix queue is
+recomputed on every render rather than tagged, which is how "security goes
+into the next release automatically" holds without an automated write.
+
+Design: docs/DESIGN.md
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+import tomllib
+
+WARMUP_DAYS = 14
+
+_VERSION_RE = re.compile(r'^v?(\d+)\.(\d+)\.(\d+)$')
+_RELEASE_RE = re.compile(r'^release:(.+)-(v\d+\.\d+\.\d+)$')
+
+
+class RoadmapUnavailable(Exception):
+    """Input could not be obtained. Callers turn this into silence."""
+
+
+CONFIG_KEYS = ('workspace', 'tag_repo', 'release_namespace',
+               'convention_start', 'auto_label_prefixes')
+REQUIRED_KEYS = ('workspace', 'tag_repo', 'release_namespace')
+
+# Set by configure(); every cfg=None default falls back to it. A module
+# global rather than a threaded-everywhere parameter because the suite calls
+# these functions directly by the hundred, and churning 900 lines of
+# signatures to avoid one global is a bad trade.
+CONFIG = None
+
+
+def configure(cfg):
+    global CONFIG
+    CONFIG = cfg
+
+
+def find_config(start=None, env=None):
+    """-> path to roadmap.toml, or None. $ROADMAP_CONFIG wins outright;
+    otherwise walk UP from `start` (default cwd) to the filesystem root."""
+    env = os.environ if env is None else env
+    override = env.get('ROADMAP_CONFIG')
+    if override:
+        return override
+    d = os.path.realpath(start or os.getcwd())
+    while True:
+        cand = os.path.join(d, 'roadmap.toml')
+        if os.path.exists(cand):
+            return cand
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def load_config(path=None, start=None, env=None, today=None):
+    """-> the config dict. Raises RoadmapUnavailable for every failure,
+    including "not configured" -- callers already turn that into a silent
+    fail-open plus a named reason on stderr, so an unconfigured install
+    needs no new error path."""
+    path = path or find_config(start=start, env=env)
+    if path is None:
+        raise RoadmapUnavailable('no roadmap.toml found; run `roadmap init`')
+    try:
+        with open(path, 'rb') as fh:
+            raw = tomllib.load(fh)
+    except Exception as exc:
+        raise RoadmapUnavailable('%s: %s' % (path, exc))
+
+    # Reject a typo BY NAME. Ignoring an unknown key would leave the real
+    # key unset, and an unset release_namespace renders a CLEAN EMPTY BOARD
+    # -- indistinguishable from "nothing is wrong".
+    unknown = sorted(set(raw) - set(CONFIG_KEYS))
+    if unknown:
+        raise RoadmapUnavailable('%s: unknown key(s): %s'
+                                 % (path, ', '.join(unknown)))
+    missing = [k for k in REQUIRED_KEYS if not raw.get(k)]
+    if missing:
+        raise RoadmapUnavailable('%s: missing required key(s): %s'
+                                 % (path, ', '.join(missing)))
+
+    # Reject the wrong TYPE by name too, before _resolve() or tuple() ever
+    # see the raw value. Without this, e.g. `workspace = 42` raises a bare
+    # TypeError instead of RoadmapUnavailable -- which breaks the binding
+    # constraint AND the fail-open contract, since main() catches only
+    # RoadmapUnavailable: a typo'd config would crash the SessionStart hook
+    # instead of failing open silently.
+    for k in ('workspace', 'tag_repo', 'release_namespace', 'convention_start'):
+        if k in raw and not isinstance(raw[k], str):
+            raise RoadmapUnavailable(
+                '%s: %s must be a string, got %s'
+                % (path, k, type(raw[k]).__name__))
+
+    if 'auto_label_prefixes' in raw:
+        prefixes = raw['auto_label_prefixes']
+        # A bare string is rejected BY NAME rather than coerced, on purpose:
+        # str.startswith() accepts a tuple, so tuple("noise:") silently
+        # becomes ('n','o','i','s','e',':') -- a valid one-character-prefix
+        # filter that matches most real labels and drops them as
+        # "auto-filed", deleting most of the board with no error. A single
+        # prefix still has to be written as a one-element list. Do not
+        # "simplify" this later by coercing a str to a list of its
+        # characters or to a one-element list -- a string and a tuple/list
+        # of strings look interchangeable but are not here.
+        if isinstance(prefixes, str):
+            raise RoadmapUnavailable(
+                '%s: auto_label_prefixes must be a list of strings, got a '
+                'bare string %r -- did you mean [%r]?' % (path, prefixes, prefixes))
+        if not isinstance(prefixes, list) or not all(isinstance(x, str) for x in prefixes):
+            raise RoadmapUnavailable(
+                '%s: auto_label_prefixes must be a list of strings, got %r'
+                % (path, prefixes))
+
+    # convention_start is OPTIONAL (not in REQUIRED_KEYS): an absent value
+    # AND an empty string alike seed `today`, the same rule load_state uses
+    # for its own convention_start default. This is deliberate, not an
+    # oversight -- it only reads as inconsistent next to the REQUIRED keys,
+    # where an empty string is rejected above as "missing" instead.
+    started = raw.get('convention_start') or (
+        today or datetime.date.today().isoformat())
+    try:
+        datetime.date.fromisoformat(started)
+    except Exception:
+        raise RoadmapUnavailable(
+            '%s: convention_start is not an ISO date: %r' % (path, started))
+
+    # Relative paths resolve against the CONFIG FILE's directory, never the
+    # cwd: the SessionStart hook runs from wherever the session opened, and
+    # `workspace = "."` must mean the same thing to it as to the CLI.
+    base = os.path.dirname(os.path.realpath(path))
+
+    def _resolve(p):
+        return p if os.path.isabs(p) else os.path.normpath(os.path.join(base, p))
+
+    return {'workspace': _resolve(raw['workspace']),
+            'tag_repo': _resolve(raw['tag_repo']),
+            'release_namespace': raw['release_namespace'],
+            'convention_start': started,
+            'auto_label_prefixes': tuple(raw.get('auto_label_prefixes') or ())}
+
+
+def parse_version(text):
+    """'v0.16.0' -> (0, 16, 0). Returns None for anything else, INCLUDING
+    prereleases -- 'v0.11.0-beta' is not a roadmap version."""
+    m = _VERSION_RE.match((text or '').strip())
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
+def version_of_label(label):
+    """'release:acme-app-v0.16.0' -> ('acme-app', (0,16,0)); else None."""
+    m = _RELEASE_RE.match(label or '')
+    if not m:
+        return None
+    v = parse_version(m.group(2))
+    if v is None:
+        return None
+    return (m.group(1), v)
+
+
+def labels_of(issue):
+    return issue.get('labels') or []
+
+
+def release_labels(issue):
+    return [l for l in labels_of(issue) if version_of_label(l) is not None]
+
+
+def release_versions(issue, cfg=None):
+    """Versions on this issue belonging to the configured release namespace,
+    ascending."""
+    cfg = cfg or CONFIG
+    out = []
+    for l in labels_of(issue):
+        parsed = version_of_label(l)
+        if parsed and parsed[0] == cfg['release_namespace']:
+            out.append(parsed[1])
+    return sorted(out)
+
+
+def is_patch(v):
+    return v[2] != 0
+
+
+def is_human_authored(issue, cfg=None):
+    cfg = cfg or CONFIG
+    for l in labels_of(issue):
+        if (l or '').startswith(cfg['auto_label_prefixes']):
+            return False
+    return True
+
+
+def is_security_marked(issue):
+    """The UNION of both markers. Measured 2026-09-21 on open issues: the
+    label alone catches 3, the title marker alone 6, the union 9. Neither
+    arm alone is sufficient."""
+    if any((l or '').lower() == 'security' for l in labels_of(issue)):
+        return True
+    return '[SECURITY]' in (issue.get('title') or '').upper()
+
+
+def _bd(bd_bin, args, timeout, cfg=None):
+    cfg = cfg or CONFIG
+    try:
+        p = subprocess.run([bd_bin] + args, capture_output=True, text=True,
+                           timeout=timeout, cwd=cfg['workspace'])
+    except Exception as exc:
+        raise RoadmapUnavailable(str(exc))
+    if p.returncode != 0:
+        raise RoadmapUnavailable('%s exited %d' % (bd_bin, p.returncode))
+    try:
+        return json.loads(p.stdout or '[]')
+    except ValueError as exc:
+        raise RoadmapUnavailable('unparseable json: %s' % exc)
+
+
+def load_issues(bd_bin='bd', timeout=60, cfg=None):
+    """-> (open_issues, closed_issues).
+
+    `-n 0` is mandatory: bd list silently truncates otherwise. Version
+    discovery is by full dump because every label-QUERY surface is broken --
+    `bd label list-all` truncates to 78 rows and `--label-pattern` returns all
+    7,105 rows for any input. Measured cost 0.4 s open / 0.9 s closed.
+    """
+    cfg = cfg or CONFIG
+    opened = _bd(bd_bin, ['list', '--status=open', '-n', '0', '--json'], timeout, cfg)
+    closed = _bd(bd_bin, ['list', '--status=closed', '-n', '0', '--json'], timeout, cfg)
+    return opened, closed
+
+
+_TYPE_RANK = {'feature': 0, 'bug': 1, 'task': 2, 'chore': 3, 'epic': 4}
+
+
+def _prio(issue):
+    p = issue.get('priority')
+    return 9 if p is None else p
+
+
+def _rank(issue):
+    """Priority first, then type, so the named deliverable leads a version
+    rather than whichever P3 sorts first alphabetically."""
+    return (_prio(issue), _TYPE_RANK.get(issue.get('issue_type'), 5), issue.get('id') or '')
+
+
+def is_hotfix(issue):
+    """P0-P1 bug OR security-marked P0-P2.
+
+    The bug arm is the BACKSTOP and it is load-bearing: github-4z8ta ('GET
+    system settings returns every credential unredacted') carries NEITHER
+    marker and is caught only because it is a P1 bug. An unmarked P2 security
+    issue is missed, and no derivation available here would find it.
+    """
+    if not is_human_authored(issue):
+        return False
+    p = _prio(issue)
+    if issue.get('issue_type') == 'bug' and p <= 1:
+        return True
+    return is_security_marked(issue) and p <= 2
+
+
+def build_model(open_issues, closed_issues, tags):
+    cut = tags[0] if tags else None
+
+    versioned_open = [i for i in open_issues if release_versions(i)]
+    versioned_closed = [i for i in closed_issues if release_versions(i)]
+
+    all_versions = set()
+    for i in versioned_open + versioned_closed:
+        all_versions.update(release_versions(i))
+
+    above = sorted(v for v in all_versions if cut is None or v > cut)
+    in_flight = above[0] if above else None
+    # A PATCH is never "planned": SemVer already marks it unplanned, and the
+    # whole hotfix design depends on a dot release being something you cut
+    # without having roadmapped it. A patch CAN be in flight -- that is a
+    # hotfix shipping -- so only the planned list filters them out.
+    planned = [v for v in above[1:] if not is_patch(v)]
+
+    versions = {}
+    for v in all_versions:
+        leaves_open = sorted(
+            (i for i in versioned_open
+             if v in release_versions(i) and i.get('issue_type') != 'epic'),
+            key=_rank)
+        gates = sorted(
+            (i for i in versioned_open
+             if v in release_versions(i) and i.get('issue_type') == 'epic'),
+            key=_rank)
+        # A gating epic contributes ZERO to the counts -- see the spec's
+        # inheritance carve-out. Its children roll in only if tagged in their
+        # own right, which is what makes the count mean "shippable leaves".
+        leaves_closed = sum(
+            1 for i in versioned_closed
+            if v in release_versions(i) and i.get('issue_type') != 'epic')
+        versions[v] = {'leaves_open': leaves_open,
+                       'leaves_closed': leaves_closed,
+                       'gates': gates}
+
+    unscheduled = sorted(
+        (i for i in open_issues
+         if i.get('issue_type') in ('feature', 'epic')
+         and not release_versions(i)
+         and is_human_authored(i)),
+        key=_rank)
+
+    hotfix = sorted(
+        (i for i in open_issues if is_hotfix(i) and not release_versions(i)),
+        key=_rank)
+
+    return {'cut': cut, 'in_flight': in_flight, 'planned': planned,
+            'versions': versions, 'unscheduled': unscheduled,
+            'hotfix': hotfix, 'throughput': {}}
+
+
+DEFAULT_STATE = os.path.expanduser('~/.claude/roadmap-cadence-state.json')
+
+
+def baseline_key(v):
+    return '%d.%d.%d' % v
+
+
+def load_state(path=DEFAULT_STATE, today=None):
+    try:
+        with open(path) as fh:
+            s = json.load(fh)
+    except Exception:
+        # Absent or corrupt state behaves like "never reported". Treating it
+        # as "just reported" would let a broken file silently disable the
+        # hook forever -- same reasoning as perms-cadence.py.
+        s = {}
+    # An absent convention_start seeds to TODAY, never to a module literal
+    # (github-cnzq7). A literal is one workspace's calendar: every later
+    # install inherits an already-EXPIRED warm-up and condition 3 asserts
+    # OFF-PLAN against a convention that is days old. Seeding forward is also
+    # the conservative direction on a CORRUPT file -- it goes quiet for 14
+    # days rather than asserting, matching warmup_active's own bias of
+    # returning True when it cannot parse the date.
+    seeded = today or datetime.date.today().isoformat()
+    return {'last_reported_at': float(s.get('last_reported_at', 0) or 0),
+            'convention_start': s.get('convention_start') or seeded,
+            'baselines': dict(s.get('baselines') or {}),
+            'last_cut': s.get('last_cut')}
+
+
+def save_state(path, state):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as fh:
+            json.dump(state, fh)
+    except Exception:
+        pass  # Failing to record is not worth breaking a session over.
+
+
+def warmup_active(state, today):
+    """True while the release-label convention is too young for an on-plan
+    claim to mean anything. Measured: the earliest closed issue carrying a
+    release label is 2026-09-20, and over 28 days only 6 of 1,876
+    human-authored closes were in a release set. That 0.3% reports the
+    CONVENTION'S AGE, not behaviour."""
+    try:
+        start = datetime.date.fromisoformat(state['convention_start'])
+        now = datetime.date.fromisoformat(today)
+    except Exception:
+        return True  # unknown age -> stay quiet rather than assert
+    return (now - start).days < WARMUP_DAYS
+
+
+PROPOSE_CAP = 7
+
+
+def descends_from(issue, epic_id, byid):
+    """True if `issue` descends from `epic_id`, by EITHER encoding.
+
+    bd records parentage two ways and NEITHER IS COMPLETE. Measured on the
+    live DB 2026-09-21: 3 open issues carry a `parent` whose id is not a
+    prefix of their own (github-xvgt -> github-gaek -> github-c8xl), and 2
+    carry a dotted id with NO parent field -- launch-1.21 and launch-1.22,
+    both children of launch-1, the epic gating v0.18.0. Matching on either
+    signal alone silently drops real work, the same shape as the
+    security-label / [SECURITY]-title union in is_security_marked.
+
+    The parent walk is transitive (github-xvgt reaches its epic in two hops)
+    and carries a `seen` guard: nothing in bd should create a parent cycle,
+    but "should not" is not a termination proof.
+    """
+    iid = issue.get('id') or ''
+    if iid == epic_id:
+        return False                      # an epic is not its own descendant
+    if iid.startswith(epic_id + '.'):
+        return True
+    seen = set()
+    cur = issue.get('parent')
+    while cur and cur not in seen:
+        if cur == epic_id:
+            return True
+        seen.add(cur)
+        nxt = byid.get(cur)
+        cur = nxt.get('parent') if nxt else None
+    return False
+
+
+def _candidates(open_issues, model, version):
+    """Unversioned open work descending from the epics that GATE `version`."""
+    entry = model['versions'].get(version) or {'gates': []}
+    epics = [g['id'] for g in entry['gates']]
+    if not epics:
+        return []
+    byid = {i['id']: i for i in open_issues}
+    out = [i for i in open_issues
+           if is_human_authored(i)
+           and not release_versions(i)
+           and any(descends_from(i, e, byid) for e in epics)]
+    return sorted(out, key=_rank)
+
+
+def propose(open_issues, model, version):
+    """Up to PROPOSE_CAP candidates for `version`, ranked so the named
+    deliverable leads."""
+    return _candidates(open_issues, model, version)[:PROPOSE_CAP]
+
+
+def propose_total(open_issues, model, version):
+    """How many candidates exist, uncapped. The COUNT is itself the signal: a
+    short list means the version is nearly ready to cut, a long one means the
+    choice is real and worth making deliberately."""
+    return len(_candidates(open_issues, model, version))
+
+
+def refresh_baselines(model, state):
+    """Snapshot the in-flight version's set at the moment it BECOMES in-flight,
+    detected by the cut tag advancing between runs.
+
+    A state file with no prior history baselines NOTHING. A version already in
+    flight before this tool existed has no plan-at-cut-time to measure against,
+    and inventing one would tie "the plan" to whenever the operator first
+    happened to run the tool -- an arbitrary moment. That is the false-clean
+    signal `no baseline yet` exists to prevent (spec: condition 2 cannot fire
+    on v0.16.0). Versions still being FILLED get no baseline either: adding to
+    them is the point.
+    """
+    cut_key = baseline_key(model['cut']) if model.get('cut') else None
+
+    # This function MUTATES last_cut, so by the time evaluate() runs the
+    # advance is otherwise invisible. Condition 6 keys on this flag.
+    model['cut_advanced'] = False
+
+    if state.get('last_cut') is None:
+        # First run ever: record where the tag train stands, baseline nothing.
+        state['last_cut'] = cut_key
+        return state
+
+    if cut_key == state['last_cut']:
+        return state          # no tag cut since the last run
+
+    model['cut_advanced'] = True
+    state['last_cut'] = cut_key
+    v = model.get('in_flight')
+    if v is not None:
+        key = baseline_key(v)
+        if key not in state['baselines']:
+            entry = model['versions'].get(v) or {'leaves_open': [], 'gates': []}
+            state['baselines'][key] = sorted(
+                i['id'] for i in entry['leaves_open'] + entry['gates'])
+    return state
+
+
+def _fmt_v(v):
+    return 'v%d.%d.%d' % v
+
+
+def evaluate(model, state, today, cfg=None):
+    """-> list of {'id', 'bypass', 'lines'}, ascending. Empty means silence."""
+    cfg = cfg or CONFIG
+    out = []
+    in_flight = model.get('in_flight')
+
+    # 1 -- horizon empty
+    if not model.get('planned'):
+        # The example version is DERIVED, never a literal (github-cnzq7).
+        # This message is bypass: True and is the only onboarding a cold
+        # board ever gets, so naming a version that does not exist teaches
+        # the convention wrong. A MINOR bump, because an empty horizon means
+        # no FEATURE version is planned above the one in flight; condition 5
+        # bumps the patch instead, because a hotfix is what it is queuing.
+        nxt = (in_flight[0], in_flight[1] + 1, 0) if in_flight else None
+        lines = ['HORIZON EMPTY -- nothing is tagged above %s.'
+                 % (_fmt_v(in_flight) if in_flight else 'the last cut tag')]
+        lines.append('  Tag a feature at its target version now. LABEL GOES LAST:')
+        lines.append('    bd label add <id> release:%s-%s'
+                     % (cfg['release_namespace'], _fmt_v(nxt) if nxt else '<version>'))
+        lines.append('  (label first prints an error and EXITS 0, so a chained'
+                     ' call reads as success while nothing was applied)')
+        out.append({'id': 1, 'bypass': True, 'lines': lines})
+
+    # 2 -- scope creep, hotfix members exempt
+    if in_flight is not None:
+        key = baseline_key(in_flight)
+        base = state['baselines'].get(key)
+        if base is not None:
+            entry = model['versions'].get(in_flight) or {'leaves_open': [], 'gates': []}
+            current = entry['leaves_open'] + entry['gates']
+            exempt = {i['id'] for i in current if is_hotfix(i)}
+            added = [i for i in current
+                     if i['id'] not in base and i['id'] not in exempt]
+            if added:
+                lines = ['SCOPE CREEP -- %s was %d issues at baseline, now %d (+%d added).'
+                         % (_fmt_v(in_flight), len(base), len(current), len(added))]
+                lines += ['    %s  %s' % (i['id'], (i.get('title') or '')[:58])
+                          for i in added[:3]]
+                lines.append('  Accept it deliberately with: bin/roadmap pin %s'
+                             % _fmt_v(in_flight))
+                out.append({'id': 2, 'bypass': False, 'lines': lines})
+
+    # 3 -- off-plan share, suppressed during warm-up
+    if not warmup_active(state, today):
+        tp = model.get('throughput') or {}
+        share = tp.get('on_plan_share_14d')
+        if share is not None and share < 0.4:
+            out.append({'id': 3, 'bypass': False, 'lines': [
+                'OFF-PLAN -- %d%% of the last 14 days of human-authored closes were'
+                ' in a release set.' % round(share * 100)]})
+
+    # 4 -- unscheduled P0/P1 feature or epic
+    severe = [i for i in model['unscheduled'] if _prio(i) <= 1]
+    if severe:
+        lines = ['%d UNSCHEDULED P0/P1 -- a severe feature or epic with no version'
+                 ' is a planning bug, not a backlog item.' % len(severe)]
+        lines += ['    P%d %-12s %s' % (_prio(i), i['id'], (i.get('title') or '')[:52])
+                  for i in severe[:3]]
+        out.append({'id': 4, 'bypass': True, 'lines': lines})
+
+    # 5 -- hotfix queue
+    q = model['hotfix']
+    if q:
+        nxt = (in_flight[0], in_flight[1], in_flight[2] + 1) if in_flight else None
+        lines = ['HOTFIX QUEUE %s -- %d unversioned, CUTTABLE INDEPENDENTLY.'
+                 % ('%s (implied)' % _fmt_v(nxt) if nxt else '(no in-flight version)',
+                    len(q))]
+        lines += ['    P%d %-12s %s' % (_prio(i), i['id'], (i.get('title') or '')[:52])
+                  for i in q[:3]]
+        lines.append('  A patch carrying one fix is a valid cut. Do not wait for'
+                     ' the in-flight version to finish.')
+        out.append({'id': 5, 'bypass': any(_prio(i) <= 1 for i in q), 'lines': lines})
+
+    # 6 -- a tag was cut since the last run (github-xs23f)
+    #
+    # Conditions 1-5 all DETECT a missing or drifting plan; none of them ever
+    # produces one, and a condition that repeats "you have not planned" is a
+    # nag rather than a practice. This is the only condition that arrives at a
+    # moment when planning is cheap: the tag cut already happens on its own
+    # schedule, the human is already here, and the question "what goes in the
+    # version after next" is live precisely now. It fires once per cut, so it
+    # needs no throttle.
+    if model.get('cut_advanced'):
+        nxt = (model.get('planned') or [None])[0]
+        lines = ['A TAG WAS CUT since the last run -- %s is now in flight.'
+                 % (_fmt_v(in_flight) if in_flight else 'a new version')]
+        lines.append('  Plan %s while the question is live:  bin/roadmap plan'
+                     % (_fmt_v(nxt) if nxt else 'the version after it'))
+        out.append({'id': 6, 'bypass': True, 'lines': lines})
+
+    return sorted(out, key=lambda c: c['id'])
+
+
+def _day(issue):
+    return (issue.get('updated_at') or '')[:10]
+
+
+def load_tag_dates(timeout=20, cfg=None):
+    """[(version, 'YYYY-MM-DD'), …] descending by date. The only tag reader
+    left (github-4jmwr fix round 8) -- `main()` derives the bare, descending
+    version list `build_model` wants via `sorted({v for v, _ in
+    load_tag_dates()}, reverse=True)` rather than shelling out twice for the
+    same data. That also removes the last bare 'tag' literal, which the
+    read-only guard's WRITE_VERBS set had to omit as a false-positive risk
+    while this function's sibling used it."""
+    cfg = cfg or CONFIG
+    try:
+        p = subprocess.run(
+            ['git', '-C', cfg['tag_repo'], 'for-each-ref',
+             '--sort=-creatordate', '--format=%(creatordate:short) %(refname:short)',
+             'refs/tags/v*'],
+            capture_output=True, text=True, timeout=timeout)
+    except Exception as exc:
+        raise RoadmapUnavailable(str(exc))
+    if p.returncode != 0:
+        raise RoadmapUnavailable('git for-each-ref exited %d' % p.returncode)
+    out = []
+    for line in p.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        v = parse_version(parts[1])
+        if v is not None:
+            out.append((v, parts[0]))
+    return out
+
+
+def compute_throughput(open_issues, closed_issues, tag_dates, today, in_flight,
+                       convention_start=None, cfg=None):
+    """Retrospective CAPACITY, never a forecast. It answers 'is a 30-issue
+    v0.18.0 realistic' and nothing else. No estimates, no projected dates.
+
+    `convention_start` governs warm-up the same way `evaluate()`'s
+    `state['convention_start']` does -- callers pass the SAME value to both
+    so the share and condition 3 can never disagree about whether warm-up is
+    still active (github-4jmwr fix round 3)."""
+    cfg = cfg or CONFIG
+    if convention_start is None:
+        convention_start = cfg['convention_start'] if cfg else datetime.date.today().isoformat()
+    def since(days):
+        d = datetime.date.fromisoformat(today) - datetime.timedelta(days=days)
+        return d.isoformat()
+
+    human = [i for i in closed_issues if is_human_authored(i)]
+    out = {}
+    for days in (7, 28):
+        cut = since(days)
+        rows = [i for i in human if _day(i) >= cut]
+        out['closed_%dd' % days] = len(rows)
+        out['in_release_%dd' % days] = sum(1 for i in rows if release_labels(i))
+        out['tags_%dd' % days] = sum(1 for _, d in tag_dates if d >= cut)
+
+    cut14 = since(14)
+    rows14 = [i for i in human if _day(i) >= cut14]
+    if warmup_active({'convention_start': convention_start}, today) or not rows14:
+        # ABSENT, not 0.0. A zero reads as a measured finding when its true
+        # cause is the convention's age.
+        out['on_plan_share_14d'] = None
+    else:
+        out['on_plan_share_14d'] = float(
+            sum(1 for i in rows14 if release_labels(i))) / len(rows14)
+
+    # Remaining-open curve for the in-flight version, reconstructed from
+    # updated_at over its CURRENT set. Approximate by construction: an issue
+    # tagged into the version yesterday appears as though it had always been
+    # open. The shape is right; the early points are not exact. Recorded in
+    # the spec under "Known miscounts, accepted".
+    out['curve'] = []
+    if in_flight is not None:
+        members_open = [i for i in open_issues if in_flight in release_versions(i)]
+        members_closed = [i for i in closed_issues if in_flight in release_versions(i)]
+        total = len(members_open) + len(members_closed)
+        base = datetime.date.fromisoformat(today)
+        for back in range(5, -1, -1):
+            day = (base - datetime.timedelta(days=back)).isoformat()
+            done_by = sum(1 for i in members_closed if _day(i) <= day)
+            out['curve'].append(total - done_by)
+    return out
+
+
+def _version_block(model, v, lines, cap=None, features_only=False):
+    entry = model['versions'].get(v) or {'leaves_open': [], 'leaves_closed': 0, 'gates': []}
+    lines.append('     %-12s %d open · %d done'
+                 % (_fmt_v(v), len(entry['leaves_open']), entry['leaves_closed']))
+    rows = entry['leaves_open']
+    if features_only:
+        rows = [i for i in rows if i.get('issue_type') == 'feature']
+    shown = rows if cap is None else rows[:cap]
+    for i in shown:
+        lines.append('        P%d %-8s %s'
+                     % (_prio(i), i.get('issue_type') or '', (i.get('title') or '')[:52]))
+    hidden = len(entry['leaves_open']) - len(shown)
+    if hidden > 0:
+        lines.append('        …%d more · /roadmap %s' % (hidden, _fmt_v(v)))
+    for g in entry['gates']:
+        lines.append('        gates: %-11s %s' % (g['id'], (g.get('title') or '')[:46]))
+
+
+def render_json(model, conditions, cfg=None):
+    cfg = cfg or CONFIG
+    v = lambda x: _fmt_v(x) if x else None
+    return json.dumps({
+        'repo': cfg['release_namespace'],
+        'cut': v(model.get('cut')),
+        'in_flight': v(model.get('in_flight')),
+        'planned': [_fmt_v(x) for x in model.get('planned') or []],
+        'baseline': model.get('baseline'),
+        'versions': {
+            _fmt_v(k): {'open': len(e['leaves_open']),
+                        'closed': e['leaves_closed'],
+                        'gates': [g['id'] for g in e['gates']],
+                        'leaves': [i['id'] for i in e['leaves_open']]}
+            for k, e in model['versions'].items()},
+        'unscheduled_count': len(model['unscheduled']),
+        'unscheduled': [{'id': i['id'], 'priority': _prio(i),
+                         'title': i.get('title') or ''} for i in model['unscheduled'][:20]],
+        'hotfix_count': len(model['hotfix']),
+        'hotfix': [{'id': i['id'], 'priority': _prio(i),
+                    'title': i.get('title') or ''} for i in model['hotfix']],
+        'throughput': model.get('throughput') or {},
+        'conditions': conditions,
+    }, indent=2)
+
+
+def render_board(model, conditions, cfg=None):
+    cfg = cfg or CONFIG
+    tp = model.get('throughput') or {}
+    lines = ['ROADMAP · %s · cut %s' % (cfg['release_namespace'],
+                                        _fmt_v(model['cut']) if model['cut'] else '(none)')]
+    lines.append('')
+
+    if model.get('in_flight'):
+        lines.append('  IN FLIGHT')
+        _version_block(model, model['in_flight'], lines)
+        lines.append('')
+
+    if model['hotfix']:
+        nxt = model['in_flight']
+        implied = _fmt_v((nxt[0], nxt[1], nxt[2] + 1)) if nxt else '(none)'
+        lines.append('  HOTFIX QUEUE %s (implied)   %d unversioned · cuttable independently'
+                     % (implied, len(model['hotfix'])))
+        for i in model['hotfix'][:3]:
+            lines.append('    P%d %-9s %-12s %s'
+                         % (_prio(i), i.get('issue_type') or '', i['id'],
+                            (i.get('title') or '')[:46]))
+        if len(model['hotfix']) > 3:
+            lines.append('     …%d more · /roadmap hotfix' % (len(model['hotfix']) - 3))
+        lines.append('')
+
+    lines.append('  PLANNED')
+    if model['planned']:
+        for v in model['planned']:
+            _version_block(model, v, lines, features_only=True)
+    else:
+        lines.append('     —  nothing tagged above the in-flight version  —')
+    lines.append('')
+
+    lines.append('  UNSCHEDULED  %d features/epics carry no version'
+                 % len(model['unscheduled']))
+    for i in model['unscheduled'][:3]:
+        lines.append('    P%d %-9s %-12s %s'
+                     % (_prio(i), i.get('issue_type') or '', i['id'],
+                        (i.get('title') or '')[:46]))
+    if len(model['unscheduled']) > 3:
+        lines.append('     …%d more · /roadmap unscheduled' % (len(model['unscheduled']) - 3))
+    lines.append('')
+
+    lines.append('  THROUGHPUT    7d  %4d closed · %3d in a release set · %2d tags cut'
+                 % (tp.get('closed_7d', 0), tp.get('in_release_7d', 0),
+                    tp.get('tags_7d', 0)))
+    lines.append('               28d  %4d closed · %3d in a release set · %2d tags cut'
+                 % (tp.get('closed_28d', 0), tp.get('in_release_28d', 0),
+                    tp.get('tags_28d', 0)))
+    if tp.get('curve'):
+        lines.append('     %-12s %s   open, last 6 days'
+                     % (_fmt_v(model['in_flight']),
+                        ' '.join('%2d' % n for n in tp['curve'])))
+    if tp.get('on_plan_share_14d') is None:
+        # model.get(...), not model[...]: render_board is reachable from a
+        # caller other than main() that never threaded state through it
+        # (github-cnzq7 fix round 1). today() there was tried and reverted
+        # (fix round 2): a date-shaped fallback for a missing date is a
+        # guess wearing the costume of a fact, the same error as the literal
+        # this whole defect removed. Say the start is UNKNOWN instead --
+        # same bias as warmup_active's except/return True: "unknown age ->
+        # stay quiet rather than assert".
+        cs = model.get('convention_start')
+        if cs:
+            lines.append('                    (release-label convention started %s;'
+                         ' no on-plan claim yet)' % cs)
+        else:
+            lines.append('                    (release-label convention start unknown;'
+                         ' no on-plan claim yet)')
+
+    # Four states, not three. "Nothing is in flight" and "in flight but
+    # unbaselined" are different facts -- collapsing them into one "no
+    # baseline yet" line would claim a version is being measured when there
+    # is nothing to measure at all.
+    if not any(c['id'] == 2 for c in conditions):
+        if not model.get('in_flight'):
+            lines.append('     creep:   n/a — no version in flight')
+        else:
+            base = model.get('baseline')
+            if base is None:
+                lines.append('     creep:   no baseline yet')
+            else:
+                lines.append('     creep:   none since baseline (%d issues)' % len(base))
+
+    if conditions:
+        lines.append('')
+        for c in conditions:
+            lines.extend('  ' + l for l in c['lines'])
+    return '\n'.join(lines)
+
+
+def probe_layout(root, run=None):
+    """Detect the three knobs from a directory layout. `ambiguous` is a list
+    of reasons; non-empty means REFUSE. Guessing is not an option here -- a
+    wrong namespace renders a clean, EMPTY board, which is indistinguishable
+    from a board with nothing wrong."""
+    run = run or subprocess.run
+    root = os.path.realpath(root)
+    out = {'workspace': '.', 'tag_repo': '.',
+           'release_namespace': os.path.basename(root), 'ambiguous': []}
+
+    if not os.path.isdir(os.path.join(root, '.git')):
+        out['ambiguous'].append(
+            '%s is not a git repository, so there is no tag_repo to read '
+            'refs/tags/v* from' % root)
+        return out
+
+    try:
+        p = run(['git', '-C', root, 'for-each-ref', '--format=%(refname:short)',
+                 'refs/tags/v*'], capture_output=True, text=True, timeout=20)
+    except Exception as exc:
+        out['ambiguous'].append('could not read git tags: %s' % exc)
+        return out
+
+    # git RAN but FAILED (corrupt/unreadable .git, permissions, etc) must not
+    # collapse into "no tags" -- that tells the user to add a tag when their
+    # repo is actually broken, and adding a tag will not fix it. Name the
+    # exit status and stderr so the real cause is visible, not just "empty".
+    if p.returncode != 0:
+        out['ambiguous'].append(
+            'git exited %d reading refs/tags/v* from %s: %s'
+            % (p.returncode, root, (getattr(p, 'stderr', '') or '').strip() or '(no stderr)'))
+        return out
+
+    tags = [t for t in (p.stdout or '').split() if parse_version(t)]
+    if not tags:
+        out['ambiguous'].append(
+            'no semver v* tags in %s -- roadmap derives every version from '
+            'them, so it cannot tell which repo ships' % root)
+    return out
+
+
+def cmd_init(root, today, out, force=False):
+    """Write roadmap.toml. -> 0 written, 2 refused."""
+    path = os.path.join(root, 'roadmap.toml')
+    if os.path.exists(path) and not force:
+        out.write('roadmap.toml already exists at %s\n'
+                  'Refusing to overwrite it. Re-run with --force to replace '
+                  'it, or edit it by hand.\n' % path)
+        return 2
+
+    probe = probe_layout(root)
+    if probe['ambiguous']:
+        out.write('Layout is ambiguous; nothing written.\n')
+        for reason in probe['ambiguous']:
+            out.write('  - %s\n' % reason)
+        out.write('\nWrite roadmap.toml by hand instead. The three keys are:\n'
+                  '  workspace         = where `bd` runs\n'
+                  '  tag_repo          = the directory holding refs/tags/v*\n'
+                  '  release_namespace = the <ns> in release:<ns>-vX.Y.Z\n')
+        return 2
+
+    out.write('Detected:\n')
+    out.write('  workspace         = %s\n' % probe['workspace'])
+    out.write('  tag_repo          = %s\n' % probe['tag_repo'])
+    out.write('  release_namespace = %s\n' % probe['release_namespace'])
+    out.write('  convention_start  = %s  (today -- governs the 14-day warm-up)\n'
+              % today)
+
+    with open(path, 'w') as fh:
+        fh.write('# roadmap.toml -- written by `roadmap init` on %s\n'
+                 '# Relative paths resolve against THIS FILE, not the cwd.\n'
+                 'workspace           = "%s"\n'
+                 'tag_repo            = "%s"\n'
+                 'release_namespace   = "%s"\n'
+                 'convention_start    = "%s"\n'
+                 '# Label prefixes whose issues are EXCLUDED from every count.\n'
+                 '# Leave empty unless a bot files issues on your board; on the\n'
+                 '# reference deployment auto-filed rows outnumbered human ones\n'
+                 '# four to one, which dominated every metric until filtered.\n'
+                 'auto_label_prefixes = []\n'
+                 % (today, probe['workspace'], probe['tag_repo'],
+                    probe['release_namespace'], today))
+    out.write('\nWrote %s\n' % path)
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog='roadmap', description='derived product roadmap over bd')
+    ap.add_argument('target', nargs='?', default=None,
+                    help="'init', 'hotfix', 'unscheduled', 'plan', 'pin', or a "
+                         "version like v0.17.0")
+    ap.add_argument('version', nargs='?', default=None,
+                    help='version for plan or pin')
+    ap.add_argument('--json', action='store_true', help='machine form (what the hook reads)')
+    ap.add_argument('--state', default=DEFAULT_STATE)
+    ap.add_argument('--today', default=datetime.date.today().isoformat())
+    ap.add_argument('--force', action='store_true',
+                    help='overwrite an existing roadmap.toml')
+    args = ap.parse_args(argv)
+
+    # init must run BEFORE configure(load_config(...)) below: that call
+    # raises RoadmapUnavailable when no config exists yet, which is
+    # precisely the situation init is here to fix. Running init after it
+    # would make init impossible to run on a fresh install.
+    if args.target == 'init':
+        return cmd_init(os.getcwd(), args.today, sys.stdout, force=args.force)
+
+    try:
+        configure(load_config(today=args.today))
+    except RoadmapUnavailable as exc:
+        sys.stderr.write('roadmap: unavailable: %s\n' % exc)
+        if args.json:
+            print(json.dumps({'unavailable': str(exc)}))
+        return 0
+
+    try:
+        opened, closed = load_issues()
+        tag_dates = load_tag_dates()
+        tags = sorted({v for v, _ in tag_dates}, reverse=True)
+    except RoadmapUnavailable as exc:
+        # Fail open (a caller -- the SessionStart hook -- must never break a
+        # session over this) but NOT silently: an unavailable bd/git must not
+        # render identically to a genuinely clean board. stderr is discarded
+        # by the hook (fail-open is unaffected); --json gives a machine
+        # consumer something to key on instead of empty stdout.
+        sys.stderr.write('roadmap: unavailable: %s\n' % exc)
+        if args.json:
+            print(json.dumps({'unavailable': str(exc)}))
+        return 0
+
+    st = load_state(args.state, today=args.today)
+
+    model = build_model(opened, closed, tags)
+    model['throughput'] = compute_throughput(
+        opened, closed, tag_dates, args.today, model['in_flight'],
+        st['convention_start'])
+
+    st = refresh_baselines(model, st)
+
+    # The board must tell "never measured" apart from "measured, nothing added".
+    model['baseline'] = (st['baselines'].get(baseline_key(model['in_flight']))
+                         if model['in_flight'] else None)
+    # render_board has no access to state (github-cnzq7 fix round 1) -- thread
+    # the PER-INSTALL convention_start through the model, same pattern as
+    # 'baseline' above, so the no-on-plan-claim-yet line can name the real
+    # date instead of the frozen module literal.
+    model['convention_start'] = st['convention_start']
+
+    if args.target == 'pin':
+        v = parse_version(args.version or '')
+        if v is None:
+            print('pin needs a version, e.g. bin/roadmap pin v0.16.0')
+            return 2
+        if v not in model['versions']:
+            # A transposed digit must not read as success: reject before
+            # writing anything, same message as the <version> render path.
+            print('no such version: %s' % args.version)
+            return 2
+        entry = model['versions'][v]
+        st['baselines'][baseline_key(v)] = sorted(
+            i['id'] for i in entry['leaves_open'] + entry['gates'])
+        save_state(args.state, st)
+        print('pinned %s at %d issues' % (_fmt_v(v), len(st['baselines'][baseline_key(v)])))
+        return 0
+
+    save_state(args.state, st)
+    conditions = evaluate(model, st, args.today)
+
+    if args.json:
+        print(render_json(model, conditions))
+        return 0
+    if args.target == 'plan':
+        v = parse_version(args.version or '') if args.version else None
+        if v is None:
+            pick = (model['planned'] or ([model['in_flight']]
+                                         if model['in_flight'] else []))
+            v = pick[0] if pick else None
+        if v is None:
+            print('nothing to plan: no version is in flight or planned')
+            return 2
+        if v not in model['versions']:
+            print('no such version: %s' % (args.version or _fmt_v(v)))
+            return 2
+        gates = [g['id'] for g in model['versions'][v]['gates']]
+        cands = propose(opened, model, v)
+        total = propose_total(opened, model, v)
+        print('PLAN %s   gates: %s' % (_fmt_v(v), ', '.join(gates) or '(none)'))
+        if not cands:
+            # An empty proposal is a RESULT, not a blank. Say which it is.
+            print('  No unversioned work descends from %s.'
+                  % (', '.join(gates) or 'any gating epic'))
+            print('  That is an answer, not an empty list: %s looks ready to cut.'
+                  % _fmt_v(v))
+            return 0
+        shown = '' if total <= len(cands) else ' (showing %d)' % len(cands)
+        print('  %d candidate%s%s. Delete the lines you do not want, paste the rest:'
+              % (total, '' if total == 1 else 's', shown))
+        print('')
+        for i in cands:
+            print('    # P%d %-8s %s' % (_prio(i), i.get('issue_type') or '',
+                                         (i.get('title') or '')[:58]))
+            print('    bd label add %s release:%s-%s'
+                  % (i['id'], CONFIG['release_namespace'], _fmt_v(v)))
+        print('')
+        print('  LABEL GOES LAST. With the label first, `bd label add` prints an')
+        print('  error and EXITS 0 -- it reads as success while nothing applied.')
+        return 0
+    if args.target == 'hotfix':
+        for i in model['hotfix']:
+            print('P%d %-9s %-14s %s' % (_prio(i), i.get('issue_type') or '',
+                                         i['id'], i.get('title') or ''))
+        return 0
+    if args.target == 'unscheduled':
+        for i in model['unscheduled']:
+            print('P%d %-9s %-14s %s' % (_prio(i), i.get('issue_type') or '',
+                                         i['id'], i.get('title') or ''))
+        return 0
+    if args.target:
+        v = parse_version(args.target)
+        if v is None or v not in model['versions']:
+            print('no such version: %s' % args.target)
+            return 2
+        out = []
+        _version_block(model, v, out)
+        print('\n'.join(out))
+        return 0
+
+    print(render_board(model, conditions))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

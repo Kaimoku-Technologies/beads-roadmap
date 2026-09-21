@@ -1,0 +1,17 @@
+name: test
+on: [push, pull_request]
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # No bd, no git fixture, no pip install: the suites feed synthetic rows.
+      - run: python3 bin/roadmap-selftest.py
+      - run: python3 hooks/test_roadmap_cadence.py
