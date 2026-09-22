@@ -964,7 +964,7 @@ def probe_layout(root, run=None, load_issues_fn=None):
     load_issues_fn = load_issues_fn or load_issues
     root = os.path.realpath(root)
     out = {'workspace': '.', 'tag_repo': '.',
-           'release_namespace': None, 'ambiguous': []}
+           'release_namespace': None, 'ambiguous': [], 'warnings': []}
 
     if not os.path.isdir(os.path.join(root, '.git')):
         out['ambiguous'].append(
@@ -991,9 +991,14 @@ def probe_layout(root, run=None, load_issues_fn=None):
 
     tags = [t for t in (p.stdout or '').split() if parse_version(t)]
     if not tags:
-        out['ambiguous'].append(
-            'no semver v* tags in %s -- roadmap derives every version from '
-            'them, so it cannot tell which repo ships' % root)
+        # A WARNING, not a refusal (github-kkq4a, I5). Refusing here told the
+        # user to write roadmap.toml by hand, which routes them past the
+        # namespace probe below -- the one thing here that genuinely cannot be
+        # guessed. A repo with release labels and no tag cut yet is a real,
+        # expected state; the runtime now says so too (condition 8).
+        out['warnings'].append(
+            'no semver v* tags in %s yet -- nothing has been cut, so no '
+            'version will show as in flight until you tag one' % root)
 
     # Namespace comes from the BOARD, never the directory (C1, init-time
     # half). Attempted even when the tag check above already failed, so a
@@ -1040,6 +1045,9 @@ def cmd_init(root, today, out, force=False, run=None, load_issues_fn=None):
     out.write('  release_namespace = %s\n' % probe['release_namespace'])
     out.write('  convention_start  = %s  (today -- governs the 14-day warm-up)\n'
               % today)
+
+    for warning in probe['warnings']:
+        out.write('\nWARNING: %s\n' % warning)
 
     with open(path, 'w') as fh:
         fh.write('# roadmap.toml -- written by `roadmap init` on %s\n'

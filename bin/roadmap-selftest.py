@@ -1614,10 +1614,18 @@ check('git failure surfaces stderr',
 # through to namespace probing too, so a fake bd is injected here purely to
 # keep this fixture off the real `bd` binary (no workspace exists at
 # `_root`); the namespace side is irrelevant to what this assertion checks.
+#
+# UPDATED for I5 (github-kkq4a): no-tags moved from `ambiguous` to
+# `warnings` -- it is no longer a refusal reason, so this now reads
+# `warnings` instead of `ambiguous`. This assertion used to pin the OLD
+# refuse-on-no-tags contract; the behaviour it checks (the reason is still
+# reported somewhere) is unchanged, only which list carries it.
 _probe_clean_empty = rm.probe_layout(_root, run=rc_stub(0, stdout=''),
                                      load_issues_fn=fake_bd(['probe-ns-real']))
 check('a clean git run with genuinely no tags still says so',
-      any('no semver v* tags' in r for r in _probe_clean_empty['ambiguous']), True)
+      any('no semver v* tags' in w for w in _probe_clean_empty['warnings']), True)
+check('a clean git run with genuinely no tags is not ambiguous',
+      _probe_clean_empty['ambiguous'], [])
 
 # A hanging git (subprocess.TimeoutExpired) must land in the same
 # could-not-read branch as a missing binary, not the no-tags branch either.
@@ -1692,6 +1700,50 @@ check('the last-resort suggestion is hedged, not a silent write',
       'last resort' in _buf4.getvalue().lower(), True)
 check('nothing was written on this refusal either',
       os.path.exists(os.path.join(_root2, 'roadmap.toml')), False)
+
+# --- I5 (github-kkq4a): init accepts what the runtime accepts --------------
+# init used to REFUSE a repo with no semver v* tags and tell the user to
+# write roadmap.toml by hand -- which routes them past the namespace probe,
+# the one guard that genuinely cannot be replaced by a guess. A new repo
+# with labels and no tag yet is a legitimate state. It is now a WARNING that
+# still writes. fake_git([]) above already produces exactly the fake-run
+# shape this needs (returncode 0, empty stdout -- git ran, found no tags),
+# so no new fake-run helper is added here.
+_root3 = tempfile.mkdtemp()
+os.makedirs(os.path.join(_root3, '.git'))
+_probe_no_tags = rm.probe_layout(
+    _root3, run=fake_git([]),
+    load_issues_fn=lambda cfg=None: ([tagged('v0.16.0', id='a')], []))
+check('no-tags is a warning, not ambiguous', _probe_no_tags['ambiguous'], [])
+check('no-tags warning is recorded',
+      any('no semver v* tags' in w for w in _probe_no_tags['warnings']), True)
+check('the namespace still came off the board',
+      _probe_no_tags['release_namespace'], 'acme-app')
+
+_buf5 = io.StringIO()
+_rc5 = rm.cmd_init(_root3, '2026-09-21', _buf5,
+                   run=fake_git([]),
+                   load_issues_fn=lambda cfg=None: ([tagged('v0.16.0', id='a')], []))
+check('init WRITES despite no tags', _rc5, 0)
+check('init created roadmap.toml',
+      os.path.exists(os.path.join(_root3, 'roadmap.toml')), True)
+check('init printed the no-tags warning',
+      'no semver v* tags' in _buf5.getvalue(), True)
+
+# MUST-MISS control: an AMBIGUOUS namespace is still a hard refusal that
+# writes nothing. Without this, dropping every refusal would pass the arms
+# above. The board here carries TWO namespaces, which cannot be resolved.
+_root4 = tempfile.mkdtemp()
+os.makedirs(os.path.join(_root4, '.git'))
+_buf6 = io.StringIO()
+_rc6 = rm.cmd_init(
+    _root4, '2026-09-21', _buf6, run=fake_git([]),
+    load_issues_fn=lambda cfg=None: (
+        [issue(id='a', labels=['release:ns-a-v1.0.0']),
+         issue(id='b', labels=['release:ns-b-v1.0.0'])], []))
+check('ambiguous namespace is still refused (control)', _rc6, 2)
+check('a refused init writes nothing (control)',
+      os.path.exists(os.path.join(_root4, 'roadmap.toml')), False)
 
 # --- decoupling scan ------------------------------------------------------
 # A property test, not an example test: no shipped file may name the
