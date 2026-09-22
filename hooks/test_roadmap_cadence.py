@@ -236,13 +236,20 @@ subprocess.run([sys.executable, HOOK], capture_output=True, text=True,
 # Guarded like the stamp check below: under a falsified HOOK (a substitute
 # that never shells out to ROADMAP_CADENCE_BIN at all) the capture file is
 # never written, and an unguarded read here would raise past every later
-# arm instead of failing this one via check().
+# arm instead of failing this one via check(). The sentinel is None, NOT []
+# (github-kkq4a) -- an empty container satisfies every `not in`, so a
+# must-miss check ('--state' not in ...) would pass VACUOUSLY against a
+# falsified run that never captured anything, exactly the input the Step 5
+# falsification drill exercises. A dedicated capture must-hit gates both
+# directions so neither can pass without real argv underneath it.
 _recorded_unset = (json.loads(open(_argv_unset).read())
-                   if os.path.exists(_argv_unset) else [])
+                   if os.path.exists(_argv_unset) else None)
+check('the unset arm captured the hook subprocess argv at all',
+      _recorded_unset is not None)
 check('argv carries --json when ROADMAP_CADENCE_STATE is unset',
-      '--json' in _recorded_unset)
+      _recorded_unset is not None and '--json' in _recorded_unset)
 check('argv omits --state when ROADMAP_CADENCE_STATE is unset',
-      '--state' not in _recorded_unset)
+      _recorded_unset is not None and '--state' not in _recorded_unset)
 
 # SET: the override must reach argv, followed by the exact forced path.
 _fd, _argv_set = tempfile.mkstemp(suffix='.json')
@@ -256,13 +263,21 @@ _env_set = dict(os.environ, ROADMAP_CADENCE_BIN=_record_argv_stub(_argv_set),
                 ROADMAP_CADENCE_STATE=_forced_path)
 subprocess.run([sys.executable, HOOK], capture_output=True, text=True,
                env=_env_set, timeout=30)
-# Guarded for the same reason as the UNSET arm above.
+# Guarded for the same reason as the UNSET arm above, same None sentinel
+# (github-kkq4a) -- both of THIS arm's checks currently use the `in`
+# direction, which is correctly False against an empty-container fallback,
+# so [] would not be vacuous here today. Use None anyway: a later edit that
+# adds or flips one of these to a `not in` check would silently reintroduce
+# the exact bug the UNSET arm just had, with nothing here to catch it. Fix
+# the class, not the instance.
 _recorded_set = (json.loads(open(_argv_set).read())
-                 if os.path.exists(_argv_set) else [])
+                 if os.path.exists(_argv_set) else None)
+check('the set arm captured the hook subprocess argv at all',
+      _recorded_set is not None)
 check('argv carries --state when ROADMAP_CADENCE_STATE is set',
-      '--state' in _recorded_set)
+      _recorded_set is not None and '--state' in _recorded_set)
 check('the --state value is the exact forced path',
-      '--state' in _recorded_set and
+      _recorded_set is not None and '--state' in _recorded_set and
       _recorded_set[_recorded_set.index('--state') + 1] == _forced_path)
 
 # --- I3 (github-kkq4a): the hook stamps the path the BINARY resolved -------
