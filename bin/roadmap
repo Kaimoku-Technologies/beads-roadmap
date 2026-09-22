@@ -732,7 +732,15 @@ def compute_throughput(open_issues, closed_issues, tag_dates, today, in_flight,
     `convention_start` governs warm-up the same way `evaluate()`'s
     `state['convention_start']` does -- callers pass the SAME value to both
     so the share and condition 3 can never disagree about whether warm-up is
-    still active (github-4jmwr fix round 3)."""
+    still active (github-4jmwr fix round 3).
+
+    Every count here is NAMESPACE-FILTERED via release_versions(i, cfg), not
+    release_labels() (github-kkq4a, M9). In a shared bd workspace the agnostic
+    helper let another product's release labels count toward this product's
+    on-plan share, and it produced an unsurfaced tell -- ">0 in a release set"
+    printed beside `versions: {}`. Filtering drives those counts to 0 in the
+    mismatch case, where condition 7 then fires with a named diagnosis instead
+    of a number the reader has to interpret."""
     cfg = cfg or CONFIG
     if convention_start is None:
         convention_start = cfg['convention_start'] if cfg else datetime.date.today().isoformat()
@@ -746,7 +754,7 @@ def compute_throughput(open_issues, closed_issues, tag_dates, today, in_flight,
         cut = since(days)
         rows = [i for i in human if _day(i) >= cut]
         out['closed_%dd' % days] = len(rows)
-        out['in_release_%dd' % days] = sum(1 for i in rows if release_labels(i))
+        out['in_release_%dd' % days] = sum(1 for i in rows if release_versions(i, cfg))
         out['tags_%dd' % days] = sum(1 for _, d in tag_dates if d >= cut)
 
     cut14 = since(14)
@@ -757,7 +765,7 @@ def compute_throughput(open_issues, closed_issues, tag_dates, today, in_flight,
         out['on_plan_share_14d'] = None
     else:
         out['on_plan_share_14d'] = float(
-            sum(1 for i in rows14 if release_labels(i))) / len(rows14)
+            sum(1 for i in rows14 if release_versions(i, cfg))) / len(rows14)
 
     # Remaining-open curve for the in-flight version, reconstructed from
     # updated_at over its CURRENT set. Approximate by construction: an issue

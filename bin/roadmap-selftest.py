@@ -661,6 +661,30 @@ AFTER = rm.compute_throughput([], TP_CLOSED, [], '2026-10-04', None,
 check('share is a float on the unlock day', isinstance(AFTER['on_plan_share_14d'], float), True)
 check('share value', AFTER['on_plan_share_14d'], 1.0)
 
+# --- M9 (github-kkq4a): throughput counts THIS product's release sets ------
+# compute_throughput used release_labels() (namespace-AGNOSTIC) where every
+# version path uses release_versions(i, cfg) (namespace-FILTERED), so in a
+# shared bd workspace another product's labels counted toward your on-plan
+# share. TP_CLOSED alone cannot detect the fix -- its only labelled row is
+# already in acme-app -- so this fixture adds a FOREIGN-namespace row.
+TP_FOREIGN = TP_CLOSED + [
+    closed_at('2026-09-20', id='c5', labels=['release:other-product-v1.0.0'])]
+TP_NS = rm.compute_throughput([], TP_FOREIGN, TAG_DATES, '2026-09-21', (0, 16, 0),
+                              convention_start='2026-09-20')
+check('in_release_7d ignores a foreign namespace', TP_NS['in_release_7d'], 1)
+# MUST-HIT control: the foreign row IS inside the window and IS human-authored,
+# so the 1 above is namespace filtering and not the row being dropped for some
+# unrelated reason. Without this, deleting c5 entirely would also pass.
+check('closed_7d still counts the foreign row (control)', TP_NS['closed_7d'], 3)
+
+# The share, on the same unlock day the AFTER fixture above uses. The 14-day
+# window reaches back to 2026-09-20 and catches exactly c1 (acme-app) and c5
+# (foreign): 1 of 2 after the fix, 2 of 2 before it.
+AFTER_NS = rm.compute_throughput([], TP_FOREIGN, [], '2026-10-04', None,
+                                 convention_start='2026-09-20')
+check('on_plan_share_14d ignores a foreign namespace',
+      AFTER_NS['on_plan_share_14d'], 0.5)
+
 # The curve is the in-flight open count per day, reconstructed from updated_at
 # on the version's CURRENT set. Six points, most recent last.
 CURVE_OPEN = [tagged('v0.16.0', id='o1'), tagged('v0.16.0', id='o2')]
