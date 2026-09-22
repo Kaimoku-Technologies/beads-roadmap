@@ -195,8 +195,54 @@ _tokens = {t for lit in _literals for t in lit}
 # MUST-HIT control: if the walk finds nothing the assertion below is vacuous
 # and would pass against a hook that shells out freely.
 check('control — AST walk found the hook argv', '--json' in _tokens)
-check('control — AST walk found the state flag', '--state' in _tokens)
+# Was a second control on '--state'. The hook no longer passes it
+# (github-kkq4a, I3) -- it reads the resolved path back out of the --json
+# payload instead -- so this is now a MUST-MISS pinning that contract. The
+# '--json' control above still proves the walk found the argv list, so the
+# write-verb assertion below cannot pass vacuously.
+check('the hook does not pass --state (it reads state_path back)',
+      '--state' not in _tokens)
 check('no write verb reaches any hook argv literal', not (_tokens & WRITE_VERBS))
+
+# --- I3 (github-kkq4a): the hook stamps the path the BINARY resolved -------
+# The hook used to compute ~/.claude/roadmap-cadence-state.json itself and
+# pass it with --state, so every workspace on the machine shared one throttle
+# stamp. It now runs --json with no --state and stamps payload['state_path'].
+# run_hook always sets ROADMAP_CADENCE_STATE, so it cannot exercise this --
+# call the hook directly with a controlled environment that pops that var.
+_sp_dir = tempfile.mkdtemp()
+_sp = os.path.join(_sp_dir, '.roadmap-state.json')
+_dirty = json.dumps({'state_path': _sp,
+                     'conditions': [{'id': 2, 'bypass': False,
+                                     'lines': ['SCOPE CREEP -- probe']}]})
+_fake = fake_roadmap(_dirty)
+_env = dict(os.environ, ROADMAP_CADENCE_BIN=_fake, ROADMAP_CADENCE_DAYS='3',
+            ROADMAP_CADENCE_TIMEOUT='10')
+_env.pop('ROADMAP_CADENCE_STATE', None)
+_p = subprocess.run([sys.executable, HOOK], capture_output=True, text=True,
+                    env=_env, timeout=30)
+check('hook speaks on a dirty payload with no --state', 'SCOPE CREEP' in _p.stdout)
+# This IS the discriminator for "did not use its own default": _sp is inside a
+# fresh temp dir the hook has no way to name on its own, so a hook still
+# computing ~/.claude/roadmap-cadence-state.json could never create it. Do not
+# assert against the real legacy path instead -- it exists on a developer's
+# machine and carries live state.
+check('hook stamped the path the payload named', os.path.exists(_sp))
+# And the stamp is a real timestamp, not a zero or an empty file -- so a hook
+# that merely touched the path would still fail here.
+check('the stamp it wrote is a real timestamp',
+      json.loads(open(_sp).read()).get('last_reported_at', 0) > 0)
+
+# A payload with NO state_path (the unavailable/unconfigured shape, or an
+# older binary) must still work -- the hook falls back rather than crashing.
+# This is the arm that keeps the one-time init nudge alive for an install with
+# no roadmap.toml, which has no config directory for state to sit beside.
+_nudge_state = os.path.join(tempfile.mkdtemp(), 'legacy.json')
+_rc, _out, _ = run_hook(fake_roadmap(json.dumps({'unconfigured': True})),
+                        state=_nudge_state)
+check('unconfigured payload without state_path still nudges',
+      'roadmap init' in _out)
+check('unconfigured nudge still exits 0', _rc == 0)
 
 # --- two-writer contract: write_stamp must not clobber bin/roadmap's fields
 # The state file is shared: bin/roadmap writes 'baselines' and 'last_cut'

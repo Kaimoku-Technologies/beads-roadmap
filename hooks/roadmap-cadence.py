@@ -43,7 +43,10 @@ DEFAULT_BIN = os.path.join(
     os.environ.get('CLAUDE_PLUGIN_ROOT',
                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     'bin', 'roadmap')
-DEFAULT_STATE = os.path.expanduser('~/.claude/roadmap-cadence-state.json')
+# The pre-github-kkq4a location: ONE file for every workspace on the machine.
+# Still the fallback when the payload carries no state_path -- the unavailable
+# and unconfigured shapes, where there is no roadmap.toml to sit beside.
+LEGACY_STATE = os.path.expanduser('~/.claude/roadmap-cadence-state.json')
 DEFAULT_DAYS = 3.0
 DEFAULT_TIMEOUT = 30
 
@@ -114,7 +117,7 @@ def mark_nudged(path):
 
 def main():
     binary = os.environ.get('ROADMAP_CADENCE_BIN', DEFAULT_BIN)
-    state = os.environ.get('ROADMAP_CADENCE_STATE', DEFAULT_STATE)
+    forced_state = os.environ.get('ROADMAP_CADENCE_STATE')
     try:
         days = float(os.environ.get('ROADMAP_CADENCE_DAYS', DEFAULT_DAYS))
     except ValueError:
@@ -127,9 +130,17 @@ def main():
     if not os.path.exists(binary):
         return 0  # fail open
 
+    argv = [binary, '--json']
+    if forced_state:
+        # append(), not a second list literal: the AST walk below (the same
+        # technique bin/roadmap-selftest.py uses) treats every list literal
+        # in the file as a potential argv, so a literal ['--state', ...] here
+        # would trip the "hook does not pass --state" control even though
+        # this IS the documented, deliberate override path.
+        argv.append('--state')
+        argv.append(forced_state)
     try:
-        p = subprocess.run([binary, '--json', '--state', state],
-                           capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except Exception:
         return 0  # fail open
     if p.returncode != 0:
@@ -139,6 +150,15 @@ def main():
         payload = json.loads(p.stdout or '{}')
     except Exception:
         return 0  # fail open
+
+    # The binary resolves the state path from ITS config; the hook must stamp
+    # the SAME file rather than computing its own (github-kkq4a, I3). A
+    # missing state_path -- the unavailable/unconfigured payload shape, or an
+    # older binary -- falls back to the legacy global path, which is also
+    # where unconfigured_reported has to live: an install with no roadmap.toml
+    # has no config directory for state to sit beside. The known consequence
+    # is that a SECOND never-configured workspace is not nudged again.
+    state = forced_state or payload.get('state_path') or LEGACY_STATE
     conditions = payload.get('conditions')
     if not conditions:
         # I8: `unconfigured` is the ONE unavailable reason that
