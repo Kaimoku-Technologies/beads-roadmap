@@ -22,6 +22,9 @@ next run, not as a cache of it.
 (If you're working from a local checkout instead of a marketplace listing,
 point Claude Code's plugin loader at this directory directly.)
 
+Using Cursor, Codex, Gemini CLI or another agent instead? See
+[Using it with other agents](#using-it-with-other-agents).
+
 ## Upgrading from 0.1.x
 
 0.2.0 moved the state file. It was one file per machine:
@@ -128,6 +131,7 @@ outside a session; see above).
 | `/roadmap pin v1.2.0` | Re-baselines that version's scope-creep snapshot |
 | `/roadmap init` | Writes `roadmap.toml` (once per workspace, see above) |
 | `/roadmap --version` | The plugin version, and the path of the `roadmap` that answered |
+| `/roadmap check` | The session-start drift check, as plain text (nothing when clean) |
 
 Every command rebuilds everything from a fresh `bd` read, so there is nothing
 to refresh or sync: run it whenever you want the current picture.
@@ -266,6 +270,82 @@ and those print at most once every three days (set
 session until fixed, including a hotfix queue that holds a priority-0/1
 issue. The same conditions appear at the bottom of the full board, so
 `/roadmap` is always the place to look closer.
+
+## Using it with other agents
+
+Everything that matters is one command-line tool, `bin/roadmap`: standard
+library Python 3.11+, reading `bd`, finding `roadmap.toml` by walking up
+from the current directory. Any coding agent that can run shell commands
+can use it. The Claude Code plugin only adds packaging: the install, the
+`/roadmap` command, a skill that tells the agent when to use it, and the
+session-start check. Here is how to get each of those elsewhere.
+
+### Install
+
+```
+git clone https://github.com/Kaimoku-Technologies/beads-roadmap.git
+ln -s "$PWD/beads-roadmap/bin/roadmap" ~/.local/bin/roadmap
+roadmap --version
+```
+
+Any directory on your `PATH` works in place of `~/.local/bin`. `--version`
+should print the path inside your clone. The script runs under the first
+`python3` on your `PATH`, which must be 3.11 or newer; macOS's
+`/usr/bin/python3` is 3.9, and on it `roadmap` prints
+`roadmap: unavailable: needs Python 3.11 or newer` instead of a board. To
+update, `git -C beads-roadmap pull`. Then run `roadmap init` in your
+workspace, as described [above](#first-run-roadmap-init).
+
+### Tell your agent about it
+
+Most agents read a project instructions file: `AGENTS.md`, a Cursor rule
+under `.cursor/rules/`, `GEMINI.md`, or similar (check your tool's docs for
+the current name and location). Paste this in:
+
+````markdown
+## Roadmap
+
+This project's roadmap is derived from the beads (`bd`) board by the
+`roadmap` command. Use it to answer "what should we ship next?", "what's in
+v1.2?", "is anything unscheduled?" or "should this be a hotfix?".
+
+- `roadmap`: the whole board. `roadmap v1.2.0`: one version.
+- `roadmap hotfix` / `roadmap unscheduled`: the full lists.
+- `roadmap plan` (or `plan v1.2.0`): proposes issues for a version and
+  prints the `bd label add` commands. Nothing is applied until they run.
+- `roadmap check`: planning drift, or nothing when all is well.
+
+Report its output as printed. Two rules:
+
+- An empty `plan` is one of two different results. "Nothing unversioned
+  below the gating epics" means the version looks ready to cut. "No gating
+  epic" means readiness could not be judged. Never report the second as the
+  first.
+- `bd label add <id> <label>` takes the label LAST. With the label first it
+  prints an error and still exits 0, so it looks like it worked.
+
+`roadmap: unavailable: …` means the board could not be read. It is not an
+empty board, even though the exit code is 0.
+````
+
+For a `/roadmap`-style shortcut, most agents also support custom commands;
+the whole command is "run `roadmap` with these arguments and show the
+output verbatim".
+
+### The drift check: `roadmap check`
+
+`roadmap check` runs the same check as the Claude Code session-start hook
+and prints it as plain text. It prints **nothing** when the board is fine,
+and it shares the hook's throttle and once-only messages, kept in the state
+file beside `roadmap.toml`. Where to run it:
+
+- **Your agent's session-start hook, if it has one.** Check whether the tool
+  passes a hook's output to the model; if it doesn't, the agent never sees
+  the message.
+- **A git hook or shell alias**, for example `post-checkout` or `post-merge`.
+  That reaches you rather than the agent, which is often enough.
+- **Your agent instructions**: "run `roadmap check` at the start of planning
+  work" (already in the snippet above).
 
 ## Conventions your board must already follow
 

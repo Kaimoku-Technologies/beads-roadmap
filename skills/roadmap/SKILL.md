@@ -25,6 +25,7 @@ file moved in 0.2.0; see the README's "Upgrading from 0.1.x".
 - `roadmap init` — write `roadmap.toml` (once per
   workspace)
 - `roadmap --version` — which plugin version is running, and from which path
+- `roadmap check` — planning drift as plain text; empty output means none
 
 ## Reading the output
 

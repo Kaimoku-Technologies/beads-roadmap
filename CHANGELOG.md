@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same throttle, the same once-only messages) because it runs that hook in
   a new `--text` mode rather than copying its logic. `--state` works as it
   does for the board.
+- **The README explains how to use `roadmap` from other agents** (Cursor,
+  Codex, Gemini CLI and others): install by cloning and symlinking
+  `bin/roadmap` onto `PATH`, a ready-to-paste instructions block for
+  `AGENTS.md`-style files, and where `roadmap check` fits.
 
 ### Fixed
 
