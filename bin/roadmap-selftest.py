@@ -56,6 +56,49 @@ def issue(**kw):
     return row
 
 
+# --- I6: the documented Python floor must be ENFORCED, not just documented -
+# import tomllib under Python < 3.11 raises a bare ModuleNotFoundError and
+# exits 1 -- a traceback, not the fail-open contract (exit 0 + a named
+# reason) every other unavailable path follows. Through the SessionStart
+# hook (discards stderr, treats non-zero exit as silence already) that
+# reads as PERMANENT, UNDIAGNOSABLE SILENCE on /usr/bin/python3 (3.9.6 on
+# macOS) -- the interpreter a second user is most likely to hit.
+#
+# There is no real pre-3.11 interpreter to run THIS suite under, so
+# _check_python_version() is a standalone, injectable function (real
+# sys.version_info/sys.executable only when no override is given) rather
+# than an inline check at import time -- both arms are exercised here by
+# passing a fake version tuple.
+
+# MUST-HIT: below the floor.
+_old_msg = rm._check_python_version(version_info=(3, 9, 6), executable='/usr/bin/python3')
+check('old interpreter produces a message, not None', _old_msg is not None, True)
+check('old interpreter message names the requirement (3.11)',
+      '3.11' in _old_msg, True)
+check('old interpreter message names the RUNNING version',
+      '3.9.6' in _old_msg, True)
+check('old interpreter message names the interpreter PATH',
+      '/usr/bin/python3' in _old_msg, True)
+check('old interpreter message follows the unavailable contract',
+      _old_msg.startswith('roadmap: unavailable:'), True)
+
+# MUST-MISS: exactly at the floor (3.11.0) must NOT trigger -- it is the
+# floor, not one below it.
+check('exactly the floor version is accepted (control)',
+      rm._check_python_version(version_info=(3, 11, 0), executable='/usr/bin/python3'),
+      None)
+# MUST-MISS control: well above the floor is obviously fine too.
+check('a newer interpreter is accepted (control)',
+      rm._check_python_version(version_info=(3, 13, 2), executable='/usr/bin/python3'),
+      None)
+# MUST-MISS: the REAL running interpreter (this suite is only runnable on
+# 3.11+ at all, since it imports the module under test) must pass with no
+# override -- proves the default path (real sys.version_info) also works,
+# not just the injected one.
+check('the real running interpreter passes with no override',
+      rm._check_python_version(), None)
+
+
 # --- version parsing ------------------------------------------------------
 VERSION_MUST_PARSE = [
     ('plain',            'v0.16.0',                     (0, 16, 0)),
@@ -134,6 +177,56 @@ for label, row in SEC_MUST_MATCH:
     check('security marks ' + label, rm.is_security_marked(row), True)
 for label, row in SEC_MUST_NOT_MATCH:
     check('security skips ' + label, rm.is_security_marked(row), False)
+
+# --- C2: BEADS_DIR must never override workspace ---------------------------
+# beads' own multi-workspace docs tell people to set BEADS_DIR. If _bd()
+# inherited it unchanged, a caller with BEADS_DIR set in their shell would
+# silently get bd's answer for THAT workspace instead of cfg['workspace'],
+# even though `cwd` is set correctly -- a fully populated but UNRELATED
+# board rendering under this install's own config. Prove it by
+# monkeypatching subprocess.run to capture exactly what env it was handed.
+_captured_bd_call = {}
+
+
+def _fake_subprocess_run(argv, **kw):
+    _captured_bd_call['env'] = kw.get('env')
+    _captured_bd_call['cwd'] = kw.get('cwd')
+
+    class R:
+        returncode = 0
+        stdout = '[]'
+    return R()
+
+
+_orig_subprocess_run = rm.subprocess.run
+_orig_beads_dir = os.environ.get('BEADS_DIR')
+os.environ['BEADS_DIR'] = '/some/unrelated/other/workspace/.beads'
+rm.subprocess.run = _fake_subprocess_run
+try:
+    rm._bd('bd', ['list'], 10, cfg={'workspace': '/the/configured/workspace'})
+finally:
+    rm.subprocess.run = _orig_subprocess_run
+    if _orig_beads_dir is None:
+        os.environ.pop('BEADS_DIR', None)
+    else:
+        os.environ['BEADS_DIR'] = _orig_beads_dir
+
+# MUST-HIT: BEADS_DIR is gone from the subprocess environment even though it
+# was set (and non-empty) in the caller's own environment throughout the call.
+check('_bd strips BEADS_DIR from the subprocess environment (C2)',
+      'BEADS_DIR' in (_captured_bd_call.get('env') or {}), False)
+# Control: cwd is still exactly cfg['workspace'] -- proves workspace, not
+# some other mechanism, is what decides the target now.
+check('_bd still passes cwd as the configured workspace (control)',
+      _captured_bd_call.get('cwd'), '/the/configured/workspace')
+# MUST-MISS: a real, populated environment was passed (not None, not {}) --
+# proves the assertion above is a targeted removal, not a null env that
+# would trivially lack every key including BEADS_DIR.
+check('_bd passes a real, non-empty environment, not a wipe',
+      isinstance(_captured_bd_call.get('env'), dict)
+      and len(_captured_bd_call['env']) > 0, True)
+check('_bd environment still carries an unrelated variable (PATH) (control)',
+      'PATH' in (_captured_bd_call.get('env') or {}), True)
 
 # --- model ----------------------------------------------------------------
 def tagged(v, **kw):
@@ -363,6 +456,13 @@ check('c2 fires against a baseline',
       2 in conds(CREEP, state(baselines={'0.16.0': ['a']})), True)
 check('c2 silent when set matches baseline',
       2 in conds(CREEP, state(baselines={'0.16.0': ['a', 'b']})), False)
+
+# I7: remediation text names the bare `roadmap` a plugin install puts on
+# PATH, not the origin-workspace-relative `bin/roadmap`.
+_c2_lines = conds(CREEP, state(baselines={'0.16.0': ['a']}))[2]['lines']
+check('c2 remediation uses bare roadmap', 'roadmap pin' in '\n'.join(_c2_lines), True)
+check('c2 remediation does not name bin/roadmap (I7)',
+      'bin/roadmap' in '\n'.join(_c2_lines), False)
 
 # Condition 2 carve-out: a hotfix member pulled into the in-flight version is
 # NEVER creep. Without this the creep detector fights the escalation policy.
@@ -896,6 +996,40 @@ with tempfile.TemporaryDirectory() as _d:
     check('successful run: no unavailable key (control)',
           'unavailable' in _parsed_ok, False)
 
+# I8: main()'s --json payload must carry `unconfigured` so the SessionStart
+# hook can speak exactly once for a fresh install (no roadmap.toml at all)
+# while staying silent for every other unavailable reason. This exercises
+# the load_config()-raising branch directly (before _run_main's own stub,
+# which always succeeds) since raise_unavailable only reaches load_issues.
+_orig_load_config = rm.load_config
+rm.load_config = lambda *a, **kw: (_ for _ in ()).throw(
+    rm.RoadmapUnavailable('no roadmap.toml found; run `roadmap init`', unconfigured=True))
+_unc_out, _unc_err = io.StringIO(), io.StringIO()
+try:
+    with contextlib.redirect_stdout(_unc_out), contextlib.redirect_stderr(_unc_err):
+        _unc_rc = rm.main(['--json', '--today', '2026-11-01'])
+finally:
+    rm.load_config = _orig_load_config
+check('unconfigured main() run exits 0', _unc_rc, 0)
+_unc_parsed = json.loads(_unc_out.getvalue())
+check('unconfigured main() --json carries unconfigured=True',
+      _unc_parsed.get('unconfigured'), True)
+
+# MUST-MISS control: an ordinary (non-unconfigured) RoadmapUnavailable at
+# the SAME call site -- e.g. a malformed config -- must not set the flag.
+rm.load_config = lambda *a, **kw: (_ for _ in ()).throw(
+    rm.RoadmapUnavailable('bad.toml: unknown key(s): oops'))
+_bad_out, _bad_err = io.StringIO(), io.StringIO()
+try:
+    with contextlib.redirect_stdout(_bad_out), contextlib.redirect_stderr(_bad_err):
+        _bad_rc = rm.main(['--json', '--today', '2026-11-01'])
+finally:
+    rm.load_config = _orig_load_config
+check('malformed-config main() run exits 0', _bad_rc, 0)
+_bad_parsed = json.loads(_bad_out.getvalue())
+check('malformed-config main() --json does NOT carry unconfigured=True (control)',
+      _bad_parsed.get('unconfigured'), False)
+
 # Finding 5: pin must reject a version that does not exist, BEFORE writing
 # anything -- a transposed digit must not read as success.
 PIN_OPEN = [tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b')]
@@ -923,6 +1057,49 @@ with tempfile.TemporaryDirectory() as _d:
           'no such version' in _out, True)
     check('pin on an absent version writes nothing to the state file',
           os.path.exists(_pin_state2), False)
+
+# --- I4: `plan` must distinguish "no gating epic, so I cannot tell" from --
+# "gating epics exist and nothing unversioned descends from them". Both
+# shapes make _candidates() return [], but only the second one is a real
+# readiness verdict. A board with no epic hierarchy yet is the DEFAULT state
+# for a new install, and the old code printed "ready to cut" for it anyway
+# -- directly contradicting the `gates: (none)` line printed just above it.
+
+# MUST-HIT: no gating epic at all. An unrelated unversioned P1 sits on the
+# board precisely to prove this isn't a real readiness signal -- and it
+# must NOT appear in the candidate list either, since it doesn't descend
+# from anything.
+PLAN_NO_GATES = [tagged('v0.17.0', id='t1', issue_type='task', priority=3),
+                 issue(id='u1', issue_type='feature', priority=1, title='stray P1')]
+with tempfile.TemporaryDirectory() as _d:
+    _plan_state = os.path.join(_d, 'state.json')
+    _rc, _out, _err = _run_main(['plan', 'v0.17.0', '--state', _plan_state,
+                                 '--today', '2026-11-01'],
+                                open_issues=PLAN_NO_GATES,
+                                tag_dates=[((0, 16, 0), '2026-09-01')])
+    check('plan with no gating epic exits 0', _rc, 0)
+    check('plan with no gating epic does NOT claim ready to cut',
+          'ready to cut' in _out, False)
+    check('plan with no gating epic says there is nothing to check descent'
+          ' against', 'nothing to check' in _out.lower(), True)
+    check('plan with no gating epic explicitly disclaims a readiness verdict',
+          'not a readiness verdict' in _out.lower(), True)
+
+# MUST-HIT control: a gating epic exists and genuinely has nothing
+# unversioned descending from it -- THIS is the real "ready to cut" case,
+# and it must still say so after the fix above.
+PLAN_WITH_GATE_EMPTY = [tagged('v0.17.0', id='epic1', issue_type='epic', priority=2)]
+with tempfile.TemporaryDirectory() as _d:
+    _plan_state2 = os.path.join(_d, 'state.json')
+    _rc2, _out2, _err2 = _run_main(['plan', 'v0.17.0', '--state', _plan_state2,
+                                    '--today', '2026-11-01'],
+                                   open_issues=PLAN_WITH_GATE_EMPTY,
+                                   tag_dates=[((0, 16, 0), '2026-09-01')])
+    check('plan with a real gating epic and no descendants exits 0', _rc2, 0)
+    check('plan with a real gating epic DOES claim ready to cut (control)',
+          'ready to cut' in _out2, True)
+    check('plan with a real gating epic omits the cannot-tell text',
+          'nothing to check' in _out2.lower(), False)
 
 # --- planning proposer (github-xs23f) -------------------------------------
 # Descent is the UNION of two encodings and NEITHER ALONE IS SUFFICIENT.
@@ -1009,6 +1186,10 @@ check('c6 names the version to plan',
       'v0.17.0' in ' '.join(conds(C6_ADVANCED, state())[6]['lines']), True)
 check('c6 points at the plan verb',
       'roadmap plan' in ' '.join(conds(C6_ADVANCED, state())[6]['lines']), True)
+# I7: the OLD assertion above ('roadmap plan' in lines) is a substring of
+# 'bin/roadmap plan' too, so it never discriminated the fix. This does.
+check('c6 remediation does not name bin/roadmap (I7)',
+      'bin/roadmap' in ' '.join(conds(C6_ADVANCED, state())[6]['lines']), False)
 # MUST-MISS control: without the flag it stays silent, so the condition is
 # keyed on the cut rather than firing on every run.
 check('c6 silent when the cut did not advance', 6 in conds(C6, state()), False)
@@ -1029,6 +1210,69 @@ _rb_same = state(last_cut='0.15.0')
 _m3 = rm.build_model([tagged('v0.16.0', id='a')], [], [(0, 15, 0)])
 rm.refresh_baselines(_m3, _rb_same)
 check('an unchanged cut does not report an advance', _m3.get('cut_advanced'), False)
+
+# --- C1, render-time half: RELEASE NAMESPACE MISMATCH (condition 7) -------
+# The detector is computable from labels alone: an issue with
+# release_labels(i) non-empty but release_versions(i) empty carries a
+# release label in some OTHER namespace than TEST_CFG['release_namespace']
+# ('acme-app'). If EVERY labelled issue is like that, the config is almost
+# certainly wrong -- not the roadmap genuinely empty -- regardless of how
+# release_namespace came to be wrong (a bad `init` guess, a hand edit, a
+# rename that drifted). This must fire LOUDLY (bypass) rather than let the
+# board render as a normal, clean, empty roadmap.
+
+# MUST-HIT: every release label on the board is in a namespace OTHER than
+# the configured one.
+MISMATCH_OPEN = [issue(id='m1', labels=['release:other-product-v1.0.0']),
+                 issue(id='m2', labels=['release:other-product-v1.1.0'])]
+MM_MODEL = rm.build_model(MISMATCH_OPEN, [], [])
+check('build_model computes namespace_mismatch',
+      MM_MODEL['namespace_mismatch'], ['other-product'])
+check('c7 fires on a full namespace mismatch', 7 in conds(MM_MODEL, state()), True)
+check('c7 bypasses the throttle', conds(MM_MODEL, state())[7]['bypass'], True)
+_c7_lines = conds(MM_MODEL, state())[7]['lines']
+check('c7 names the configured namespace',
+      'acme-app' in '\n'.join(_c7_lines), True)
+check('c7 names the namespace actually found',
+      'other-product' in '\n'.join(_c7_lines), True)
+check('c7 says MISMATCH loudly', 'MISMATCH' in '\n'.join(_c7_lines), True)
+
+# MUST-HIT variant: SEVERAL other namespaces present -- both must be named,
+# not just one.
+MISMATCH_MULTI = [issue(id='m3', labels=['release:ns-a-v1.0.0']),
+                  issue(id='m4', labels=['release:ns-b-v1.0.0'])]
+check('namespace_mismatch names every namespace found, not just one',
+      rm._namespace_mismatch(MISMATCH_MULTI, []), ['ns-a', 'ns-b'])
+
+# MUST-MISS: a board where labels DO match the configured namespace must
+# NOT trigger this, even if OTHER namespaces are also present (a mixed,
+# multi-product workspace is normal, not a misconfiguration). Without this
+# control the fix would just replace a silent-wrong-board with a false
+# alarm on every legitimate multi-product install.
+MIXED_OK = [tagged('v0.16.0', id='ok1'),  # 'acme-app', the configured ns
+           issue(id='ok2', labels=['release:other-product-v1.0.0'])]
+MIXED_MODEL = rm.build_model(MIXED_OK, [], [])
+check('a board with SOME matching labels is not a mismatch (control)',
+      MIXED_MODEL['namespace_mismatch'], None)
+check('c7 silent when the configured namespace has real matches',
+      7 in conds(MIXED_MODEL, state()), False)
+
+# MUST-MISS: a genuinely fresh board with NO release labels at all is not a
+# mismatch either -- that is condition 1's job (HORIZON EMPTY), not this
+# one's. Reusing BOARD_MODEL-shape fixtures already used elsewhere: EMPTY
+# (defined earlier) has zero release labels anywhere.
+check('a label-free board is not a mismatch (control)',
+      EMPTY['namespace_mismatch'], None)
+check('c7 silent on a genuinely empty board', 7 in conds(EMPTY, state()), False)
+
+# A REAL install's namespace must never be mistaken for a mismatch just
+# because it differs from the suite's synthetic 'acme-app' -- prove the
+# detector is keyed on cfg['release_namespace'], not a hardcoded literal, by
+# swapping the configured namespace and re-checking a matching board.
+_OTHER_INSTALL_CFG = dict(TEST_CFG, release_namespace='some-other-product')
+_other_install_open = [issue(id='k1', labels=['release:some-other-product-v0.16.0'])]
+check('a matching board under a DIFFERENT configured namespace is clean',
+      rm._namespace_mismatch(_other_install_open, [], cfg=_OTHER_INSTALL_CFG), None)
 
 # --- config layer ---------------------------------------------------------
 def write_cfg(text, name='roadmap.toml'):
@@ -1086,6 +1330,10 @@ try:
     check('missing config raises', 'no raise', 'RoadmapUnavailable')
 except rm.RoadmapUnavailable as exc:
     check('missing config names the remedy', 'roadmap init' in str(exc), True)
+    # I8: this is the ONE unavailable reason that unambiguously means setup
+    # was never run at all, and the hook keys on this flag to speak once.
+    check('missing config is marked unconfigured (I8)',
+          exc.unconfigured, True)
 
 # A typo must be REJECTED BY NAME. Silently ignoring it yields an empty
 # board -- the exact silent-wrong-answer this design rejected.
@@ -1095,6 +1343,12 @@ try:
     check('unknown key raises', 'no raise', 'RoadmapUnavailable')
 except rm.RoadmapUnavailable as exc:
     check('unknown key is named', 'release_namespc' in str(exc), True)
+    # MUST-MISS control (I8): a config file that EXISTS but is broken is a
+    # different failure than no file at all -- it must NOT be marked
+    # unconfigured, or the hook would nudge "run roadmap init" at a user
+    # whose real problem is a typo in an existing file.
+    check('a broken (but present) config is NOT marked unconfigured (I8)',
+          exc.unconfigured, False)
 
 # A missing REQUIRED key is likewise named.
 _d4, _p4 = write_cfg('workspace = "."\ntag_repo = "."\n')
@@ -1194,6 +1448,27 @@ def fake_git(tags):
     return run
 
 
+def fake_bd(namespaces=(), closed_namespaces=(), raise_unavailable=None):
+    """A stand-in for load_issues(cfg=...) -- probe_layout's C1 fix reads
+    release labels off the board via this exact call shape
+    (load_issues_fn(cfg={'workspace': root})) rather than the directory
+    name. Yields one labelled issue per namespace given, so the suite can
+    drive "exactly one namespace", "several", and "none" without a real bd
+    workspace anywhere (matches the CI comment: no bd, synthetic rows only).
+    """
+    def _load(cfg=None, **kw):
+        if raise_unavailable is not None:
+            raise rm.RoadmapUnavailable(raise_unavailable)
+
+        def mk(ns, n):
+            return issue(id='probe-%s-%d' % (ns, n),
+                        labels=['release:%s-v1.0.0' % ns])
+        opened = [mk(ns, n) for n, ns in enumerate(namespaces)]
+        closed = [mk(ns, n) for n, ns in enumerate(closed_namespaces)]
+        return opened, closed
+    return _load
+
+
 _root = tempfile.mkdtemp()
 # A REAL repo, not just an empty .git dir: cmd_init's own probe_layout call
 # below is never given the fake_git injection (cmd_init's signature takes no
@@ -1209,12 +1484,72 @@ subprocess.run(['git', 'init', '-q', _root], check=True, env=_git_env)
 subprocess.run(['git', '-C', _root, 'commit', '-q', '--allow-empty', '-m', 'init'],
                check=True, env=_git_env)
 subprocess.run(['git', '-C', _root, 'tag', 'v1.2.0'], check=True, env=_git_env)
-_probe = rm.probe_layout(_root, run=fake_git(['v1.2.0']))
+
+# C1 (init-time): namespace comes from the BOARD, never the directory. This
+# fixture's board carries release labels in exactly one namespace,
+# 'probe-ns-real', which is deliberately NOT os.path.basename(_root) -- if
+# the fix regressed to reading the directory name, this assertion would
+# catch it even though tempfile.mkdtemp() names are already unlikely to
+# collide with a chosen literal.
+_probe = rm.probe_layout(_root, run=fake_git(['v1.2.0']),
+                         load_issues_fn=fake_bd(['probe-ns-real']))
 check('single-repo workspace is the root', _probe['workspace'], '.')
 check('single-repo tag_repo is the root', _probe['tag_repo'], '.')
-check('namespace defaults to the dir name',
-      _probe['release_namespace'], os.path.basename(os.path.realpath(_root)))
+check('namespace is derived from the BOARD, not the directory',
+      _probe['release_namespace'], 'probe-ns-real')
 check('single-repo layout is unambiguous', _probe['ambiguous'], [])
+# MUST-MISS: the OLD behaviour (directory basename) must be gone entirely --
+# proves the fix changed the SOURCE, not just the fixture's happy coincidence.
+check('namespace is NOT the directory basename (control)',
+      _probe['release_namespace'] == os.path.basename(os.path.realpath(_root)),
+      False)
+
+# MUST-HIT: several namespaces on the board -- roadmap cannot guess between
+# them, so this must refuse and NAME both.
+_probe_multi_ns = rm.probe_layout(
+    _root, run=fake_git(['v1.2.0']),
+    load_issues_fn=fake_bd(['probe-ns-a', 'probe-ns-b']))
+_multi_ns_reasons = ' '.join(_probe_multi_ns['ambiguous'])
+check('multiple board namespaces are ambiguous',
+      _probe_multi_ns['ambiguous'] != [], True)
+check('multiple board namespaces names BOTH in the refusal',
+      'probe-ns-a' in _multi_ns_reasons and 'probe-ns-b' in _multi_ns_reasons,
+      True)
+check('multiple board namespaces: release_namespace stays unset',
+      _probe_multi_ns['release_namespace'], None)
+
+# MUST-HIT: no release labels on the board at all -- roadmap has no evidence
+# and must refuse rather than fall back to the directory name.
+_probe_no_ns = rm.probe_layout(_root, run=fake_git(['v1.2.0']),
+                               load_issues_fn=fake_bd([]))
+check('no board namespaces is ambiguous',
+      _probe_no_ns['ambiguous'] != [], True)
+check('no board namespaces: release_namespace stays unset',
+      _probe_no_ns['release_namespace'], None)
+check('no board namespaces names the reason, not just "no tags"',
+      any('release:<namespace>' in r for r in _probe_no_ns['ambiguous']), True)
+
+# MUST-HIT: bd itself unavailable during the probe (not installed, no
+# workspace, whatever) is ALSO ambiguous, naming the underlying reason --
+# not silently treated as "no namespaces found".
+_probe_bd_down = rm.probe_layout(
+    _root, run=fake_git(['v1.2.0']),
+    load_issues_fn=fake_bd(raise_unavailable='bd exited 1'))
+check('bd unavailable during probe is ambiguous',
+      _probe_bd_down['ambiguous'] != [], True)
+check('bd unavailable during probe names the underlying reason',
+      any('bd exited 1' in r for r in _probe_bd_down['ambiguous']), True)
+
+# MUST-MISS control: a namespace also present on the CLOSED side alone
+# (no open issue carries it) is still found -- probe_release_namespace reads
+# both, the same as load_issues does everywhere else in this tool.
+_probe_closed_only = rm.probe_layout(
+    _root, run=fake_git(['v1.2.0']),
+    load_issues_fn=fake_bd([], closed_namespaces=['probe-ns-closed']))
+check('a namespace seen only on closed issues still resolves',
+      _probe_closed_only['release_namespace'], 'probe-ns-closed')
+check('closed-only resolution is unambiguous',
+      _probe_closed_only['ambiguous'], [])
 
 # --- probe_layout: git RAN but FAILED must not collapse into "no tags" ----
 # A repo that exists but is unreadable (corrupt .git, permissions, whatever)
@@ -1251,7 +1586,12 @@ check('git failure surfaces stderr',
 # tags yet" and must keep saying so -- a fix that reports failure for every
 # empty result would pass the must-hit above too, so this has to hold
 # separately.
-_probe_clean_empty = rm.probe_layout(_root, run=rc_stub(0, stdout=''))
+# No tags is NOT an early return (unlike the failures above) -- it falls
+# through to namespace probing too, so a fake bd is injected here purely to
+# keep this fixture off the real `bd` binary (no workspace exists at
+# `_root`); the namespace side is irrelevant to what this assertion checks.
+_probe_clean_empty = rm.probe_layout(_root, run=rc_stub(0, stdout=''),
+                                     load_issues_fn=fake_bd(['probe-ns-real']))
 check('a clean git run with genuinely no tags still says so',
       any('no semver v* tags' in r for r in _probe_clean_empty['ambiguous']), True)
 
@@ -1282,23 +1622,52 @@ check('init wrote nothing on refusal',
       os.path.exists(os.path.join(_bare, 'roadmap.toml')), False)
 
 # The happy path writes a file that load_config accepts -- a round trip,
-# not just "a file appeared".
+# not just "a file appeared". `run` is left real (git shells out for real,
+# per the fixture comment above); `load_issues_fn` is faked so this stays
+# off a real `bd` binary while still exercising cmd_init's own threading of
+# the injection through to probe_layout (C1).
 _buf2 = io.StringIO()
 check('init succeeds on a clear layout',
-      rm.cmd_init(_root, '2027-03-01', _buf2), 0)
+      rm.cmd_init(_root, '2027-03-01', _buf2,
+                 load_issues_fn=fake_bd(['probe-ns-real'])), 0)
 _written = rm.load_config(os.path.join(_root, 'roadmap.toml'))
 check('init seeds convention_start to today',
       _written['convention_start'], '2027-03-01')
-check('the written config round-trips',
-      _written['release_namespace'], os.path.basename(os.path.realpath(_root)))
+check('the written config round-trips the BOARD-derived namespace',
+      _written['release_namespace'], 'probe-ns-real')
+# MUST-MISS: the directory name must not have leaked in anywhere -- the
+# exact defect (C1) this whole fix removes.
+check('the written config is NOT the directory basename (control)',
+      _written['release_namespace'] == os.path.basename(os.path.realpath(_root)),
+      False)
 check('init PRINTS what it found',
-      os.path.basename(os.path.realpath(_root)) in _buf2.getvalue(), True)
+      'probe-ns-real' in _buf2.getvalue(), True)
 
 # MUST-MISS: a second init must not silently clobber a config someone
 # hand-edited.
 _buf3 = io.StringIO()
 check('init refuses to overwrite', rm.cmd_init(_root, '2027-03-01', _buf3), 2)
 check('the overwrite refusal names --force', '--force' in _buf3.getvalue(), True)
+
+# --- cmd_init: ambiguous namespace refusal names a last-resort suggestion -
+# The directory basename may appear ONLY as a last-resort suggestion in the
+# refusal text, never silently written (C1). A fresh, never-inited dir with
+# tags but NO board evidence exercises this.
+_root2 = tempfile.mkdtemp()
+subprocess.run(['git', 'init', '-q', _root2], check=True, env=_git_env)
+subprocess.run(['git', '-C', _root2, 'commit', '-q', '--allow-empty', '-m', 'init'],
+               check=True, env=_git_env)
+subprocess.run(['git', '-C', _root2, 'tag', 'v1.0.0'], check=True, env=_git_env)
+_buf4 = io.StringIO()
+check('init refuses when the board has no release labels',
+      rm.cmd_init(_root2, '2027-03-01', _buf4, run=fake_git(['v1.0.0']),
+                 load_issues_fn=fake_bd([])), 2)
+check('the refusal suggests the directory name as a LAST RESORT, not a fact',
+      os.path.basename(os.path.realpath(_root2)) in _buf4.getvalue(), True)
+check('the last-resort suggestion is hedged, not a silent write',
+      'last resort' in _buf4.getvalue().lower(), True)
+check('nothing was written on this refusal either',
+      os.path.exists(os.path.join(_root2, 'roadmap.toml')), False)
 
 # --- decoupling scan ------------------------------------------------------
 # A property test, not an example test: no shipped file may name the

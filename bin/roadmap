@@ -15,13 +15,45 @@ into the next release automatically" holds without an automated write.
 
 Design: docs/DESIGN.md
 """
+import sys
+
+
+def _check_python_version(version_info=None, executable=None):
+    """-> an error message if the running interpreter is below the floor,
+    else None. Split out from the sys.exit() call below so the suite can
+    exercise both arms by injecting a fake version tuple -- there is no
+    real pre-3.11 interpreter to run this repo's OWN test suite under.
+
+    Called BEFORE `import tomllib`: that import is what actually raises
+    (ModuleNotFoundError) on Python < 3.11, and an uncaught traceback here
+    exits 1 with no named reason, violating the fail-open contract every
+    other unavailable path follows (exit 0 + `roadmap: unavailable: ...`).
+    Through the SessionStart hook -- which discards stderr and treats any
+    non-zero exit as fail-open silence -- an uncaught traceback here reads
+    as PERMANENT, UNDIAGNOSABLE SILENCE, on the interpreter a second user is
+    most likely to hit: /usr/bin/python3 on macOS is 3.9.6.
+    """
+    version_info = sys.version_info if version_info is None else version_info
+    executable = sys.executable if executable is None else executable
+    if tuple(version_info[:3]) < (3, 11, 0):
+        return ('roadmap: unavailable: needs Python 3.11 or newer (the '
+                'config loader uses stdlib tomllib, added in 3.11); this '
+                'interpreter is %d.%d.%d at %s'
+                % (version_info[0], version_info[1], version_info[2], executable))
+    return None
+
+
+_PY_VERSION_ERROR = _check_python_version()
+if _PY_VERSION_ERROR:
+    sys.stderr.write(_PY_VERSION_ERROR + '\n')
+    sys.exit(0)  # fail open, like every other unavailable reason
+
 import argparse
 import datetime
 import json
 import os
 import re
 import subprocess
-import sys
 import tomllib
 
 WARMUP_DAYS = 14
@@ -31,7 +63,20 @@ _RELEASE_RE = re.compile(r'^release:(.+)-(v\d+\.\d+\.\d+)$')
 
 
 class RoadmapUnavailable(Exception):
-    """Input could not be obtained. Callers turn this into silence."""
+    """Input could not be obtained. Callers turn this into silence.
+
+    `unconfigured=True` marks the ONE reason that unambiguously means setup
+    was never run at all -- no roadmap.toml anywhere on the walk-up (I8) --
+    as opposed to every other reason (bd down, git down, a malformed
+    config), any of which could equally mean a working install hit a real
+    or transient problem. The SessionStart hook keys on this flag to speak
+    exactly once for a fresh install while staying silent for every other
+    unavailable reason, per its own fail-open contract.
+    """
+
+    def __init__(self, message, unconfigured=False):
+        super().__init__(message)
+        self.unconfigured = unconfigured
 
 
 CONFIG_KEYS = ('workspace', 'tag_repo', 'release_namespace',
@@ -75,7 +120,8 @@ def load_config(path=None, start=None, env=None, today=None):
     needs no new error path."""
     path = path or find_config(start=start, env=env)
     if path is None:
-        raise RoadmapUnavailable('no roadmap.toml found; run `roadmap init`')
+        raise RoadmapUnavailable('no roadmap.toml found; run `roadmap init`',
+                                 unconfigured=True)
     try:
         with open(path, 'rb') as fh:
             raw = tomllib.load(fh)
@@ -198,6 +244,42 @@ def is_patch(v):
     return v[2] != 0
 
 
+def _namespace_mismatch(open_issues, closed_issues, cfg=None):
+    """None if the board's release labels are consistent with the
+    configured namespace -- including a genuinely label-free board, which
+    is condition 1's job (HORIZON EMPTY), not this one's. Otherwise the
+    sorted list of namespaces the board actually carries.
+
+    The detector (C1, render-time half): an issue with release_labels(i)
+    non-empty but release_versions(i) empty carries a release label in some
+    OTHER namespace than cfg['release_namespace']. If EVERY labelled issue
+    on the board is like that -- none match the configured namespace at
+    all -- release_namespace is almost certainly wrong, not the roadmap
+    genuinely empty. This is what makes a wrong `init` guess (or a
+    hand-edited roadmap.toml, or a namespace that drifted after a rename)
+    detectable regardless of how the config came to be wrong: it only reads
+    the board and the config, never how the config was produced.
+
+    MUST-MISS by construction: if even ONE labelled issue matches the
+    configured namespace, this returns None -- a mixed multi-product
+    workspace where only SOME work uses this namespace is normal, not a
+    misconfiguration, and must never trip this detector.
+    """
+    cfg = cfg or CONFIG
+    labelled = [i for i in open_issues + closed_issues if release_labels(i)]
+    if not labelled:
+        return None
+    if any(release_versions(i, cfg) for i in labelled):
+        return None
+    found = set()
+    for i in labelled:
+        for l in labels_of(i):
+            parsed = version_of_label(l)
+            if parsed:
+                found.add(parsed[0])
+    return sorted(found)
+
+
 def is_human_authored(issue, cfg=None):
     cfg = cfg or CONFIG
     for l in labels_of(issue):
@@ -217,9 +299,20 @@ def is_security_marked(issue):
 
 def _bd(bd_bin, args, timeout, cfg=None):
     cfg = cfg or CONFIG
+    # BEADS_DIR, if set in the caller's environment, overrides bd's own
+    # cwd-based workspace discovery -- beads' own multi-workspace docs tell
+    # people to set it. Inheriting os.environ unchanged here would let an
+    # ambient BEADS_DIR silently point bd at a DIFFERENT workspace than
+    # cfg['workspace'] names, even though `cwd` below is set correctly
+    # (C2): a fully populated but UNRELATED board would render under this
+    # install's own namespace with no indication anything was wrong.
+    # `workspace` is supposed to be the single source of truth the config
+    # layer promises, so strip BEADS_DIR rather than let it compete with cwd.
+    env = dict(os.environ)
+    env.pop('BEADS_DIR', None)
     try:
         p = subprocess.run([bd_bin] + args, capture_output=True, text=True,
-                           timeout=timeout, cwd=cfg['workspace'])
+                           timeout=timeout, cwd=cfg['workspace'], env=env)
     except Exception as exc:
         raise RoadmapUnavailable(str(exc))
     if p.returncode != 0:
@@ -325,7 +418,8 @@ def build_model(open_issues, closed_issues, tags):
 
     return {'cut': cut, 'in_flight': in_flight, 'planned': planned,
             'versions': versions, 'unscheduled': unscheduled,
-            'hotfix': hotfix, 'throughput': {}}
+            'hotfix': hotfix, 'throughput': {},
+            'namespace_mismatch': _namespace_mismatch(open_issues, closed_issues)}
 
 
 DEFAULT_STATE = os.path.expanduser('~/.claude/roadmap-cadence-state.json')
@@ -523,7 +617,7 @@ def evaluate(model, state, today, cfg=None):
                          % (_fmt_v(in_flight), len(base), len(current), len(added))]
                 lines += ['    %s  %s' % (i['id'], (i.get('title') or '')[:58])
                           for i in added[:3]]
-                lines.append('  Accept it deliberately with: bin/roadmap pin %s'
+                lines.append('  Accept it deliberately with: roadmap pin %s'
                              % _fmt_v(in_flight))
                 out.append({'id': 2, 'bypass': False, 'lines': lines})
 
@@ -571,9 +665,27 @@ def evaluate(model, state, today, cfg=None):
         nxt = (model.get('planned') or [None])[0]
         lines = ['A TAG WAS CUT since the last run -- %s is now in flight.'
                  % (_fmt_v(in_flight) if in_flight else 'a new version')]
-        lines.append('  Plan %s while the question is live:  bin/roadmap plan'
+        lines.append('  Plan %s while the question is live:  roadmap plan'
                      % (_fmt_v(nxt) if nxt else 'the version after it'))
         out.append({'id': 6, 'bypass': True, 'lines': lines})
+
+    # 7 -- configured release_namespace matches NOTHING on the board, while
+    # release labels in OTHER namespaces are in active use (C1, render-time
+    # half). This is a config error, not an empty roadmap -- the board
+    # above renders as though nothing is scheduled, and every version count
+    # is measured against a namespace with zero matching labels. Always
+    # bypass, same reasoning as condition 1: a silent, clean-looking empty
+    # board here is exactly the failure this whole design exists to refuse.
+    mismatch = model.get('namespace_mismatch')
+    if mismatch:
+        lines = ['RELEASE NAMESPACE MISMATCH -- release_namespace is %r in'
+                 ' roadmap.toml, but the board only carries release labels'
+                 ' in: %s.' % (cfg['release_namespace'], ', '.join(mismatch))]
+        lines.append('  Every count above is measured against a namespace with'
+                     ' ZERO matching labels -- this is NOT a genuinely empty'
+                     ' roadmap. Fix release_namespace in roadmap.toml to'
+                     ' match your board, then re-run.')
+        out.append({'id': 7, 'bypass': True, 'lines': lines})
 
     return sorted(out, key=lambda c: c['id'])
 
@@ -800,15 +912,51 @@ def render_board(model, conditions, cfg=None):
     return '\n'.join(lines)
 
 
-def probe_layout(root, run=None):
+def _probe_release_namespace(root, load_issues_fn):
+    """Read release labels off the board via the SAME bd-list path
+    load_issues() uses (cfg={'workspace': root}), and return the single
+    namespace in use. -> (namespace, reason); exactly one is non-None.
+
+    Guessing is not an option (C1): a wrong namespace renders a clean,
+    EMPTY board, indistinguishable from a board with nothing wrong. If
+    exactly one namespace is present on the board, that is EVIDENCE and is
+    used outright. Several, or none, is ambiguous and must be named, not
+    silently resolved by falling back to the directory's basename.
+    """
+    try:
+        opened, closed = load_issues_fn(cfg={'workspace': root})
+    except RoadmapUnavailable as exc:
+        return None, ('could not read the board at %s to determine '
+                      'release_namespace: %s' % (root, exc))
+
+    namespaces = set()
+    for i in opened + closed:
+        for l in labels_of(i):
+            parsed = version_of_label(l)
+            if parsed:
+                namespaces.add(parsed[0])
+
+    if len(namespaces) == 1:
+        return next(iter(namespaces)), None
+    if not namespaces:
+        return None, ('no release:<namespace>-vX.Y.Z labels found on the '
+                      'board at %s -- roadmap derives release_namespace from '
+                      'existing labels, never from the directory name' % root)
+    return None, ('multiple release-label namespaces found on the board at '
+                  '%s: %s -- roadmap cannot guess which one is yours'
+                  % (root, ', '.join(sorted(namespaces))))
+
+
+def probe_layout(root, run=None, load_issues_fn=None):
     """Detect the three knobs from a directory layout. `ambiguous` is a list
     of reasons; non-empty means REFUSE. Guessing is not an option here -- a
     wrong namespace renders a clean, EMPTY board, which is indistinguishable
     from a board with nothing wrong."""
     run = run or subprocess.run
+    load_issues_fn = load_issues_fn or load_issues
     root = os.path.realpath(root)
     out = {'workspace': '.', 'tag_repo': '.',
-           'release_namespace': os.path.basename(root), 'ambiguous': []}
+           'release_namespace': None, 'ambiguous': []}
 
     if not os.path.isdir(os.path.join(root, '.git')):
         out['ambiguous'].append(
@@ -838,10 +986,20 @@ def probe_layout(root, run=None):
         out['ambiguous'].append(
             'no semver v* tags in %s -- roadmap derives every version from '
             'them, so it cannot tell which repo ships' % root)
+
+    # Namespace comes from the BOARD, never the directory (C1, init-time
+    # half). Attempted even when the tag check above already failed, so a
+    # single `init` run names every problem at once instead of one refusal
+    # per re-run.
+    namespace, reason = _probe_release_namespace(root, load_issues_fn)
+    if namespace is not None:
+        out['release_namespace'] = namespace
+    else:
+        out['ambiguous'].append(reason)
     return out
 
 
-def cmd_init(root, today, out, force=False):
+def cmd_init(root, today, out, force=False, run=None, load_issues_fn=None):
     """Write roadmap.toml. -> 0 written, 2 refused."""
     path = os.path.join(root, 'roadmap.toml')
     if os.path.exists(path) and not force:
@@ -850,7 +1008,7 @@ def cmd_init(root, today, out, force=False):
                   'it, or edit it by hand.\n' % path)
         return 2
 
-    probe = probe_layout(root)
+    probe = probe_layout(root, run=run, load_issues_fn=load_issues_fn)
     if probe['ambiguous']:
         out.write('Layout is ambiguous; nothing written.\n')
         for reason in probe['ambiguous']:
@@ -859,6 +1017,13 @@ def cmd_init(root, today, out, force=False):
                   '  workspace         = where `bd` runs\n'
                   '  tag_repo          = the directory holding refs/tags/v*\n'
                   '  release_namespace = the <ns> in release:<ns>-vX.Y.Z\n')
+        # The directory basename is a LAST-RESORT suggestion, printed here
+        # and never written anywhere (C1) -- the exact guess this design
+        # rejected as approach B, because a wrong namespace renders a
+        # clean, empty board indistinguishable from nothing being wrong.
+        out.write('\nAs a last resort, this directory is named %r -- verify '
+                  'it actually matches your release-label convention before '
+                  'using it; do not assume it does.\n' % os.path.basename(os.path.realpath(root)))
         return 2
 
     out.write('Detected:\n')
@@ -912,7 +1077,15 @@ def main(argv=None):
     except RoadmapUnavailable as exc:
         sys.stderr.write('roadmap: unavailable: %s\n' % exc)
         if args.json:
-            print(json.dumps({'unavailable': str(exc)}))
+            # `unconfigured` (I8) is the ONE unavailable reason that
+            # unambiguously means setup was never run at all -- no
+            # roadmap.toml anywhere -- as opposed to every other reason
+            # (bd down, a malformed config), any of which could mean a
+            # working install hit a real problem. The SessionStart hook
+            # keys on this flag to speak exactly once for a fresh install
+            # while staying silent for everything else.
+            print(json.dumps({'unavailable': str(exc),
+                              'unconfigured': getattr(exc, 'unconfigured', False)}))
         return 0
 
     try:
@@ -951,7 +1124,7 @@ def main(argv=None):
     if args.target == 'pin':
         v = parse_version(args.version or '')
         if v is None:
-            print('pin needs a version, e.g. bin/roadmap pin v0.16.0')
+            print('pin needs a version, e.g. roadmap pin v0.16.0')
             return 2
         if v not in model['versions']:
             # A transposed digit must not read as success: reject before
@@ -988,11 +1161,23 @@ def main(argv=None):
         total = propose_total(opened, model, v)
         print('PLAN %s   gates: %s' % (_fmt_v(v), ', '.join(gates) or '(none)'))
         if not cands:
-            # An empty proposal is a RESULT, not a blank. Say which it is.
-            print('  No unversioned work descends from %s.'
-                  % (', '.join(gates) or 'any gating epic'))
-            print('  That is an answer, not an empty list: %s looks ready to cut.'
-                  % _fmt_v(v))
+            # An empty proposal is a RESULT, not a blank -- but WHICH result
+            # depends on whether there was anything to check descent
+            # against (I4). No gating epics is the DEFAULT state for a new
+            # board (no epic hierarchy has formed yet), and it means "I
+            # cannot tell", not "ready to cut" -- those are different
+            # claims, and conflating them contradicted the `gates: (none)`
+            # line printed just above it.
+            if not gates:
+                print('  %s has no gating epic, so there is nothing to check'
+                     ' unversioned work\'s descent against.' % _fmt_v(v))
+                print('  This is NOT a readiness verdict: unversioned work may'
+                     ' still belong in %s. Tag a gating epic if you want that'
+                     ' signal, or check the version by hand.' % _fmt_v(v))
+            else:
+                print('  No unversioned work descends from %s.' % ', '.join(gates))
+                print('  That is an answer, not an empty list: %s looks ready to cut.'
+                      % _fmt_v(v))
             return 0
         shown = '' if total <= len(cands) else ' (showing %d)' % len(cands)
         print('  %d candidate%s%s. Delete the lines you do not want, paste the rest:'

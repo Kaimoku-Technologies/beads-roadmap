@@ -25,14 +25,18 @@ point Claude Code's plugin loader at this directory directly.)
 ## First run: `roadmap init`
 
 Before anything else, run `roadmap init` once per workspace. It probes the
-directory layout — is this a git checkout, does it carry semver `v*` tags,
-what's a reasonable release-label namespace — prints what it found, and
-writes `roadmap.toml`.
+directory layout — is this a git checkout, does it carry semver `v*` tags —
+and reads the release-label namespace off the **board itself** (via `bd
+list`, not the directory name): if the board carries release labels in
+exactly one namespace, that's the evidence it uses. It prints what it found
+and writes `roadmap.toml`.
 
-It **refuses to guess** on an ambiguous layout (no `.git`, or a repo with no
-`v*` tags yet) rather than writing a config that would silently render a
-clean, empty board. In that case, copy `roadmap.example.toml` and fill in the
-three keys by hand.
+It **refuses to guess** on an ambiguous layout — no `.git`, a repo with no
+`v*` tags yet, or a board whose release labels are absent or span more than
+one namespace — rather than writing a config that would silently render a
+clean, empty board. (The directory name appears only as a last-resort
+suggestion in that refusal, never as a value it writes on its own.) In that
+case, copy `roadmap.example.toml` and fill in the three keys by hand.
 
 ## Conventions your board must already follow
 
@@ -62,7 +66,11 @@ board — without an error telling you why:
 **Python 3.11 or newer, standard library only.** The config loader uses
 `tomllib`, which shipped in the standard library starting in 3.11 — there is
 no TOML dependency to install. Nothing else here reaches outside the standard
-library either.
+library either. The floor is **enforced**, not just documented: on an older
+interpreter (`/usr/bin/python3` on macOS is commonly 3.9.6) `roadmap` prints
+`roadmap: unavailable: ...` naming both the requirement and the interpreter
+it found, then exits 0, the same fail-open contract every other unavailable
+reason follows — instead of an uncaught traceback.
 
 If you use [mise](https://mise.jdx.dev/), `.mise.toml` pins the exact patch
 this project develops against. It deliberately names the **oldest** supported

@@ -90,6 +90,44 @@ check('output is hook JSON',
 rc, out, st = run_hook(fake_roadmap(THROTTLED))
 check('throttled condition speaks on a fresh stamp', 'SCOPE CREEP' in out)
 
+# --- I7: remediation text names the bare `roadmap` a plugin install puts on
+# PATH, never the origin-workspace-relative `bin/roadmap`. -----------------
+rc, out, _ = run_hook(fake_roadmap(BYPASS))
+check('hook output does not name bin/roadmap anywhere (I7)',
+      'bin/roadmap' not in out)
+check('hook output points at the bare Full board pointer (I7)',
+      'Full board: `roadmap`' in out)
+check('hook output points at the bare hotfix queue pointer (I7)',
+      'queue: `roadmap hotfix`' in out)
+
+# --- I8: the ONE unavailable reason that means "not configured yet" must
+# speak once; every OTHER unavailable reason (this hook never even sees
+# `conditions` for either) must stay silent, matching every arm above it. --
+UNCONFIGURED = json.dumps({
+    'unavailable': 'no roadmap.toml found; run `roadmap init`',
+    'unconfigured': True})
+UNAVAILABLE_ORDINARY = json.dumps({'unavailable': 'bd exited 1'})
+
+# MUST-HIT: a fresh state file, never nudged before -- the hook speaks,
+# names `roadmap init`, and exits 0.
+rc, out, st_unc = run_hook(fake_roadmap(UNCONFIGURED))
+check('unconfigured: exits 0', rc == 0)
+check('unconfigured: nudges toward roadmap init', 'roadmap init' in out)
+
+# MUST-MISS: the SAME state file, second run -- the nudge fired once and
+# must not repeat, even though the underlying condition (no roadmap.toml)
+# is still true.
+rc2, out2, _ = run_hook(fake_roadmap(UNCONFIGURED), state=st_unc)
+check('unconfigured: exits 0 on the second run', rc2 == 0)
+check('unconfigured: does not repeat the nudge (speaks ONCE)', out2.strip() == '')
+
+# MUST-MISS control: an ORDINARY unavailable reason (no `unconfigured` key)
+# never speaks at all, on a fresh state file or otherwise -- proves the
+# nudge is keyed on the flag, not on the mere presence of `unavailable`.
+rc3, out3, _ = run_hook(fake_roadmap(UNAVAILABLE_ORDINARY))
+check('ordinary unavailable reason: exits 0', rc3 == 0)
+check('ordinary unavailable reason: stays silent (control)', out3.strip() == '')
+
 # --- SILENT arms ----------------------------------------------------------
 rc, out, _ = run_hook(fake_roadmap(CLEAN))
 check('no conditions -> total silence', out.strip() == '')

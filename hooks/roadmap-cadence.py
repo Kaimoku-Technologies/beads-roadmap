@@ -84,6 +84,34 @@ def write_stamp(path):
         pass  # Failing to record is not worth breaking a session over.
 
 
+def already_nudged(path):
+    """I8: has the one-time "run `roadmap init`" nudge already fired for
+    this state file? A DEDICATED key, never `last_reported_at` -- reusing
+    the normal throttle stamp would let this nudge's own write suppress a
+    real, throttled condition (e.g. scope creep) reported shortly after
+    init, for up to the rest of the throttle window."""
+    try:
+        with open(path) as fh:
+            return bool(json.load(fh).get('unconfigured_reported'))
+    except Exception:
+        return False
+
+
+def mark_nudged(path):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            with open(path) as fh:
+                state = json.load(fh)
+        except Exception:
+            state = {}
+        state['unconfigured_reported'] = True
+        with open(path, 'w') as fh:
+            json.dump(state, fh)
+    except Exception:
+        pass  # Failing to record just means the nudge repeats next time.
+
+
 def main():
     binary = os.environ.get('ROADMAP_CADENCE_BIN', DEFAULT_BIN)
     state = os.environ.get('ROADMAP_CADENCE_STATE', DEFAULT_STATE)
@@ -108,23 +136,37 @@ def main():
         return 0  # fail open
 
     try:
-        conditions = json.loads(p.stdout or '{}').get('conditions')
+        payload = json.loads(p.stdout or '{}')
     except Exception:
         return 0  # fail open
+    conditions = payload.get('conditions')
     if not conditions:
-        return 0  # clean -> silence
+        # I8: `unconfigured` is the ONE unavailable reason that
+        # unambiguously means setup was never run at all (no roadmap.toml
+        # anywhere), not that the board is broken -- every OTHER
+        # unavailable reason (bd down, a malformed config) stays silent
+        # here, matching property 4. This is the single exception, and it
+        # speaks only ONCE per state file (a dedicated marker, not the
+        # normal throttle stamp) so a fresh, never-configured install is
+        # not silent forever, without turning into a permanent nag either.
+        if payload.get('unconfigured') and not already_nudged(state):
+            emit('No roadmap.toml found -- run `roadmap init` once per '
+                 'workspace to set this up. (This prints once; silent '
+                 'after that until the file exists.)')
+            mark_nudged(state)
+        return 0  # clean, or an already-reported unconfigured state -> silence
 
     bypass = any(c.get('bypass') for c in conditions)
     throttled = (time.time() - read_stamp(state)) < days * 86400
     if throttled and not bypass:
         return 0
 
-    lines = ['ROADMAP CADENCE CHECK (bin/roadmap, github-4jmwr)']
+    lines = ['ROADMAP CADENCE CHECK (roadmap, github-4jmwr)']
     for c in conditions:
         if throttled and not c.get('bypass'):
             continue
         lines.extend(c.get('lines') or [])
-    lines.append('Full board: `bin/roadmap`  ·  queue: `bin/roadmap hotfix`')
+    lines.append('Full board: `roadmap`  ·  queue: `roadmap hotfix`')
     lines.append('(Throttled conditions run at most once every %g days;'
                  ' bypass conditions repeat every session.)' % days)
 
