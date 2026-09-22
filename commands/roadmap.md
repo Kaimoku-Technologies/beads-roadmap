@@ -4,15 +4,15 @@ description: Show the product roadmap — versions, hotfix queue, unscheduled wo
 
 Run the roadmap board and report it.
 
-- No argument → `${CLAUDE_PLUGIN_ROOT}/bin/roadmap`
-- `init` → `${CLAUDE_PLUGIN_ROOT}/bin/roadmap init` — probes the layout, prints
+- No argument → `roadmap`
+- `init` → `roadmap init` — probes the layout, prints
   what it found, and writes `roadmap.toml`. Run this once per workspace before
   anything else. It REFUSES an ambiguous layout rather than guessing; write
   the file by hand in that case.
-- `hotfix` → `${CLAUDE_PLUGIN_ROOT}/bin/roadmap hotfix` (full severity queue)
-- `unscheduled` → `${CLAUDE_PLUGIN_ROOT}/bin/roadmap unscheduled` (everything
+- `hotfix` → `roadmap hotfix` (full severity queue)
+- `unscheduled` → `roadmap unscheduled` (everything
   with no version)
-- `plan` → `${CLAUDE_PLUGIN_ROOT}/bin/roadmap plan` (or `plan v1.2.0`) —
+- `plan` → `roadmap plan` (or `plan v1.2.0`) —
   proposes what should go in a version, drawn from the unversioned work
   descending from that version's gating epics, ranked, capped at 7 with the
   true total shown. Emits a paste-ready `bd label add` block. An EMPTY
@@ -24,8 +24,8 @@ Run the roadmap board and report it.
   which is the default state for a board whose epic hierarchy has not formed
   yet. Relay whichever one it printed; never upgrade the second into the
   first.
-- A version like `v1.2.0` → `${CLAUDE_PLUGIN_ROOT}/bin/roadmap v1.2.0`
-- `pin <version>` → `${CLAUDE_PLUGIN_ROOT}/bin/roadmap pin <version>`, which
+- A version like `v1.2.0` → `roadmap v1.2.0`
+- `pin <version>` → `roadmap pin <version>`, which
   re-baselines that version's scope-creep snapshot. Only run this when the
   growth has been accepted deliberately — it discards the evidence of what
   was added.

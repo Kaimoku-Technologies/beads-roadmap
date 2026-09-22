@@ -10,15 +10,15 @@ writes to bd, so there is no state to migrate and no tag to keep in sync.
 
 ## Commands
 
-- `${CLAUDE_PLUGIN_ROOT}/bin/roadmap` — the board
-- `${CLAUDE_PLUGIN_ROOT}/bin/roadmap hotfix` — the full severity queue
-- `${CLAUDE_PLUGIN_ROOT}/bin/roadmap unscheduled` — everything with no version
-- `${CLAUDE_PLUGIN_ROOT}/bin/roadmap plan` (or `plan v1.2.0`) — proposes what
+- `roadmap` — the board
+- `roadmap hotfix` — the full severity queue
+- `roadmap unscheduled` — everything with no version
+- `roadmap plan` (or `plan v1.2.0`) — proposes what
   should go in a version
-- `${CLAUDE_PLUGIN_ROOT}/bin/roadmap v1.2.0` — one version in detail
-- `${CLAUDE_PLUGIN_ROOT}/bin/roadmap pin v1.2.0` — re-baseline that version's
+- `roadmap v1.2.0` — one version in detail
+- `roadmap pin v1.2.0` — re-baseline that version's
   scope-creep snapshot
-- `${CLAUDE_PLUGIN_ROOT}/bin/roadmap init` — write `roadmap.toml` (once per
+- `roadmap init` — write `roadmap.toml` (once per
   workspace)
 
 ## Reading the output
