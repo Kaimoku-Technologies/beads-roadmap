@@ -6,9 +6,12 @@ Run the roadmap board and report it.
 
 - No argument → `roadmap`
 - `init` → `roadmap init` — probes the layout, prints
-  what it found, and writes `roadmap.toml`. Run this once per workspace before
-  anything else. It REFUSES an ambiguous layout rather than guessing; write
-  the file by hand in that case.
+  what it found, and writes `roadmap.toml` into the current directory. Run
+  this once per workspace before anything else. A repo with no semver `v*`
+  tags yet gets a WARNING and the file is still written. It REFUSES, writing
+  nothing, only on a genuinely ambiguous layout — no `.git`, or release labels
+  that are absent from the board or span more than one namespace; write the
+  file by hand in that case.
 - `hotfix` → `roadmap hotfix` (full severity queue)
 - `unscheduled` → `roadmap unscheduled` (everything
   with no version)

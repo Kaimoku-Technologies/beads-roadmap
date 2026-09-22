@@ -2099,12 +2099,28 @@ check('ambiguous namespace is still refused (control)', _rc6, 2)
 check('a refused init writes nothing (control)',
       os.path.exists(os.path.join(_root4, 'roadmap.toml')), False)
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# --- manifest agreement ---------------------------------------------------
+# The two manifests carry the version independently, and every release so far
+# has been a hand-checked two-place edit (github-kkq4a). Both are indexed, not
+# .get()-ed: a renamed or missing key raises here instead of letting two Nones
+# compare equal and pass vacuously, and the shape assertion below means a
+# version that is present but not a version cannot satisfy it either.
+_PLUGIN_VERSION = json.load(
+    open(os.path.join(_ROOT, '.claude-plugin', 'plugin.json')))['version']
+_MARKET_VERSION = json.load(
+    open(os.path.join(_ROOT, '.claude-plugin', 'marketplace.json')))['plugins'][0]['version']
+check('the plugin version is three dotted integers',
+      [p.isdigit() for p in _PLUGIN_VERSION.split('.')], [True, True, True])
+check('plugin.json and marketplace.json agree on the version',
+      _PLUGIN_VERSION, _MARKET_VERSION)
+
 # --- decoupling scan ------------------------------------------------------
 # A property test, not an example test: no shipped file may name the
 # workspace this tool came from. The fixture rename above makes a surviving
 # literal fail a behavioural check; this catches one hiding in a comment,
 # a docstring or a default that no behavioural test happens to reach.
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Built by concatenation, not spelled out whole: this very file is itself a
 # shipped file the walk below visits, so a needle written out in full would

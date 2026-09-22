@@ -872,8 +872,13 @@ def compute_throughput(open_issues, closed_issues, tag_dates, today, in_flight,
     # the spec under "Known miscounts, accepted".
     out['curve'] = []
     if in_flight is not None:
-        members_open = [i for i in open_issues if in_flight in release_versions(i)]
-        members_closed = [i for i in closed_issues if in_flight in release_versions(i)]
+        # `cfg`, like the two counts above (github-kkq4a). Without it these two
+        # lines read CONFIG while the rest of the function reads its `cfg`
+        # argument, so compute_throughput disagreed with itself about its own
+        # parameter. Same class as github-086tz, which stays deferred; these
+        # two lines are in the function this change already touches.
+        members_open = [i for i in open_issues if in_flight in release_versions(i, cfg)]
+        members_closed = [i for i in closed_issues if in_flight in release_versions(i, cfg)]
         total = len(members_open) + len(members_closed)
         base = datetime.date.fromisoformat(today)
         for back in range(5, -1, -1):

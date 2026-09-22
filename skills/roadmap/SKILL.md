@@ -6,7 +6,11 @@ description: Use when asked what should ship next, what is in a version, whether
 # Roadmap
 
 Everything is DERIVED from the beads board on each render. The tool never
-writes to bd, so there is no state to migrate and no tag to keep in sync.
+writes to bd, so there is no bd state to migrate and no tag to keep in sync.
+It does keep one small local file, `.roadmap-state.json`, beside
+`roadmap.toml` — the scope-creep baseline and the SessionStart hook's throttle
+stamp, both compared against a fresh `bd` read rather than caching one. That
+file moved in 0.2.0; see the README's "Upgrading from 0.1.x".
 
 ## Commands
 
