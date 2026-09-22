@@ -318,6 +318,29 @@ check('control — a minor IS planned', MINOR['planned'], [(0, 17, 0)])
 INFLIGHT_PATCH = rm.build_model([tagged('v0.15.1', id='hf')], [], [(0, 15, 0)])
 check('a patch may be in flight', INFLIGHT_PATCH['in_flight'], (0, 15, 1))
 
+# --- I5 (github-kkq4a): no tags means nothing is in flight ----------------
+# With tags == [], cut is None, so `above` admitted EVERY version and
+# in_flight became the LOWEST one -- an already-shipped release rendering as
+# in progress. Nothing has been cut, so nothing is in flight and every
+# labelled version is ahead of us.
+NT_OPEN = [tagged('v0.16.0', id='a', issue_type='feature'),
+           tagged('v0.18.0', id='b', issue_type='feature'),
+           tagged('v0.16.1', id='c', issue_type='bug', priority=1)]
+NT = rm.build_model(NT_OPEN, [], [])
+check('no tags: nothing is in flight', NT['in_flight'], None)
+check('no tags: the model says so', NT['no_tags'], True)
+check('no tags: every non-patch version is planned',
+      NT['planned'], [(0, 16, 0), (0, 18, 0)])
+
+# MUST-MISS control: WITH a tag, in_flight is the lowest version ABOVE it and
+# planned excludes it -- the pre-existing behaviour, unchanged.
+WT = rm.build_model(NT_OPEN, [], [(0, 15, 0)])
+check('with a tag: in_flight is the lowest above the cut (control)',
+      WT['in_flight'], (0, 16, 0))
+check('with a tag: planned excludes the in-flight version (control)',
+      WT['planned'], [(0, 18, 0)])
+check('with a tag: no_tags is False (control)', WT['no_tags'], False)
+
 # --- conditions -----------------------------------------------------------
 def conds(model, state, today='2026-11-01'):
     return {c['id']: c for c in rm.evaluate(model, state, today)}
@@ -1297,6 +1320,36 @@ _OTHER_INSTALL_CFG = dict(TEST_CFG, release_namespace='some-other-product')
 _other_install_open = [issue(id='k1', labels=['release:some-other-product-v0.16.0'])]
 check('a matching board under a DIFFERENT configured namespace is clean',
       rm._namespace_mismatch(_other_install_open, [], cfg=_OTHER_INSTALL_CFG), None)
+
+# --- I5b (github-kkq4a): condition 8 -- no version tags at all -------------
+# Runtime half of the same finding init's warning covers (I5a): the board
+# above renders every version as PLANNED, which is honest but needs
+# explaining, so condition 8 names the state. NT/WT are the no-tags/with-tag
+# model fixtures defined earlier alongside build_model's own I5 coverage.
+NT_CONDS = rm.evaluate(NT, state(), '2026-09-21')
+_c8 = [c for c in NT_CONDS if c['id'] == 8]
+check('condition 8 fires with no tags', len(_c8), 1)
+check('condition 8 is bypass', _c8[0]['bypass'], True)
+check('condition 8 names the tag_repo',
+      any(TEST_CFG['tag_repo'] in l for l in _c8[0]['lines']), True)
+# MUST-MISS: with a tag cut, condition 8 is silent.
+check('condition 8 is silent with a tag (control)',
+      [c for c in rm.evaluate(WT, state(), '2026-09-21') if c['id'] == 8], [])
+
+# Condition 1 (HORIZON EMPTY) must NOT double-fire on a tagless board that
+# carries labels -- planned is non-empty, so there IS a horizon. On a board
+# with neither tags nor labels both fire, which is correct: an empty horizon
+# and an untagged repo are two different things a cold install needs told.
+check('condition 1 stays quiet on a tagless board WITH labels',
+      [c for c in NT_CONDS if c['id'] == 1], [])
+_cold = rm.evaluate(rm.build_model([], [], []), state(), '2026-09-21')
+check('a wholly cold board hears both 1 and 8',
+      sorted(c['id'] for c in _cold if c['id'] in (1, 8)), [1, 8])
+
+# refresh_baselines must never claim a cut advanced when there are no tags.
+_nt_state = state(last_cut=None)
+rm.refresh_baselines(NT, _nt_state)
+check('no tags: cut_advanced is never True', NT['cut_advanced'], False)
 
 # --- config layer ---------------------------------------------------------
 def write_cfg(text, name='roadmap.toml'):

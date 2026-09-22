@@ -377,13 +377,23 @@ def build_model(open_issues, closed_issues, tags):
     for i in versioned_open + versioned_closed:
         all_versions.update(release_versions(i))
 
+    # No tags at all is a DIFFERENT state from "no tag above the cut"
+    # (github-kkq4a, I5). With cut None, `above` admits every version, and
+    # taking above[0] as in_flight made the LOWEST -- often an already-shipped
+    # release -- render as in progress. Nothing has been cut, so nothing is in
+    # flight and every labelled version is still ahead. Condition 8 says so.
+    no_tags = not tags
     above = sorted(v for v in all_versions if cut is None or v > cut)
-    in_flight = above[0] if above else None
     # A PATCH is never "planned": SemVer already marks it unplanned, and the
     # whole hotfix design depends on a dot release being something you cut
     # without having roadmapped it. A patch CAN be in flight -- that is a
     # hotfix shipping -- so only the planned list filters them out.
-    planned = [v for v in above[1:] if not is_patch(v)]
+    if no_tags:
+        in_flight = None
+        planned = [v for v in above if not is_patch(v)]
+    else:
+        in_flight = above[0] if above else None
+        planned = [v for v in above[1:] if not is_patch(v)]
 
     versions = {}
     for v in all_versions:
@@ -416,7 +426,7 @@ def build_model(open_issues, closed_issues, tags):
         (i for i in open_issues if is_hotfix(i) and not release_versions(i)),
         key=_rank)
 
-    return {'cut': cut, 'in_flight': in_flight, 'planned': planned,
+    return {'cut': cut, 'no_tags': no_tags, 'in_flight': in_flight, 'planned': planned,
             'versions': versions, 'unscheduled': unscheduled,
             'hotfix': hotfix, 'throughput': {},
             'namespace_mismatch': _namespace_mismatch(open_issues, closed_issues)}
@@ -686,6 +696,21 @@ def evaluate(model, state, today, cfg=None):
                      ' roadmap. Fix release_namespace in roadmap.toml to'
                      ' match your board, then re-run.')
         out.append({'id': 7, 'bypass': True, 'lines': lines})
+
+    # 8 -- the tag_repo carries no semver v* tags at all (github-kkq4a, I5).
+    # Always bypass, same reasoning as conditions 1 and 7: the board above
+    # renders every version as planned, which is honest but needs explaining,
+    # and a cold install that never hears this cannot tell why nothing is ever
+    # in flight. init now WARNS on the same state instead of refusing, so this
+    # is the runtime half of one finding, not a second one.
+    if model.get('no_tags'):
+        lines = ['NO VERSION TAGS -- %s carries no semver v* tags, so nothing'
+                 ' has been cut.' % cfg['tag_repo']]
+        lines.append('  No version is in flight, and every version above is'
+                     ' shown as PLANNED.')
+        lines.append('  Cut a tag (e.g. `git tag v0.1.0`) for roadmap to tell'
+                     ' shipped from planned.')
+        out.append({'id': 8, 'bypass': True, 'lines': lines})
 
     return sorted(out, key=lambda c: c['id'])
 
