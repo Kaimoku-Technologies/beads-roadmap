@@ -42,20 +42,22 @@ cannot hide a needle since none of the needles contain one"* — proves
 *fabricate* but is false for *hide*, because "a replacement byte inside a
 needle's span splits it."
 
-Probed directly. In every case where the raw bytes actually contain the
-needle, the decoded text still does:
+Probed directly. `NEEDLE` below stands for one of the four-or-more-character
+ASCII strings in `_COUPLED` — written as a placeholder rather than spelled out,
+because this document is itself a shipped `.md` file that the scan walks, and a
+literal here would trip the very gate it is describing.
 
 | bytes | needle in bytes | needle after decode |
 | --- | --- | --- |
-| `kuju` | yes | **yes** |
-| `kuju` + `\xff` | yes | **yes** |
-| `\xff` + `kuju` | yes | **yes** |
-| `\xf0` + `kuju` | yes | **yes** |
-| `\xf0\x90` + `kuju` | yes | **yes** |
-| `\xf0\x90\x80` + `kuju` | yes | **yes** |
-| `ku\xffu` | no | no |
-| `kuju` as UTF-16LE / UTF-16BE | no | no |
-| `ku` + literal U+FFFD + `ju` | no | no |
+| `NEEDLE` | yes | **yes** |
+| `NEEDLE` + `\xff` | yes | **yes** |
+| `\xff` + `NEEDLE` | yes | **yes** |
+| `\xf0` + `NEEDLE` | yes | **yes** |
+| `\xf0\x90` + `NEEDLE` | yes | **yes** |
+| `\xf0\x90\x80` + `NEEDLE` | yes | **yes** |
+| `NEEDLE` with one interior byte overwritten by `\xff` | no | no |
+| `NEEDLE` encoded as UTF-16LE / UTF-16BE | no | no |
+| `NEEDLE` split by a literal U+FFFD | no | no |
 
 Python's UTF-8 decoder never folds a byte `< 0x80` into a replacement's
 maximal subpart, so an **all-ASCII** needle cannot be split by one. Every

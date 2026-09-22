@@ -452,7 +452,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `bin/roadmap` — `load_config` (return dict, ~line 196), `DEFAULT_STATE` (~line 425), `render_json` (~line 799), `main` (~lines 1062, 1106, 1137, 1141)
-- Test: `bin/roadmap-selftest.py` (after the `load_state` / `save_state` section, ~line 625)
+- Test: `bin/roadmap-selftest.py` — **two separate insertion points.** The `load_config` / `default_state_path` assertions go after the `load_state` / `save_state` section (~line 625). The final `--json reports the resolved state path` assertion uses `_run_main`, which is not defined until ~line 941, so **it must go into the `_run_main` section instead** (after the existing `successful run: no unavailable key (control)` block). Putting it at ~625 raises `NameError` at import.
 
 **Interfaces:**
 - Produces:
@@ -520,6 +520,9 @@ with tempfile.TemporaryDirectory() as _d:
 
 # main() reports the resolved path so the SessionStart hook can stamp the SAME
 # file instead of computing its own.
+# >>> THIS BLOCK GOES IN THE _run_main SECTION (~line 941+), NOT at ~625.
+# _run_main is not defined yet at 625 and the suite asserts at import time,
+# so placing it there raises NameError before any check runs.
 with tempfile.TemporaryDirectory() as _d:
     _sp = os.path.join(_d, 'state.json')
     _rc, _out, _err = _run_main(['--json', '--state', _sp, '--today', '2026-11-01'],
@@ -816,9 +819,9 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ### Task 6: the three deferred test/comment items, as corrected
 
 **Files:**
-- Modify: `bin/roadmap-selftest.py` (three sections), `bin/roadmap:~757` (one comment amendment)
+- Modify: `bin/roadmap-selftest.py` only — three test sections plus one comment inside `scan_tree`. **Do not touch `bin/roadmap` in this task**; `compute_throughput`'s docstring belongs to Task 1.
 
-**Interfaces:** no production signature changes beyond one comment.
+**Interfaces:** no production code changes at all. This task is tests and one test-file comment.
 
 **Two of the three premises were corrected during spec review — build what is actually missing, not what the ticket said.**
 
