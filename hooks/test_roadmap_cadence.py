@@ -432,16 +432,57 @@ check('the stamp it wrote is a real timestamp',
       os.path.exists(_sp) and
       json.loads(open(_sp).read()).get('last_reported_at', 0) > 0)
 
-# A payload with NO state_path (the unavailable/unconfigured shape, or an
-# older binary) must still work -- the hook falls back rather than crashing.
-# This is the arm that keeps the one-time init nudge alive for an install with
-# no roadmap.toml, which has no config directory for state to sit beside.
-_nudge_state = os.path.join(tempfile.mkdtemp(), 'legacy.json')
-_rc, _out, _ = run_hook(fake_roadmap(json.dumps({'unconfigured': True})),
-                        state=_nudge_state)
-check('unconfigured payload without state_path still nudges',
-      'roadmap init' in _out)
-check('unconfigured nudge still exits 0', _rc == 0)
+# --- I4 (github-kkq4a): the LEGACY_STATE fallback, exercised for real -----
+# A payload with NO state_path -- the unavailable/unconfigured shape, or an
+# older binary -- falls back to LEGACY_STATE, which is also where an install
+# with no roadmap.toml has to keep its one-time nudge marker: there is no
+# config directory for the state file to sit beside.
+#
+# This arm used to run through run_hook, which ALWAYS sets
+# ROADMAP_CADENCE_STATE, so `forced_state` short-circuited
+# `forced_state or payload.get('state_path') or LEGACY_STATE` and the fallback
+# was never reached. Deleting `or LEGACY_STATE` from the hook left the
+# assertion passing while its comment claimed to cover it.
+#
+# LEGACY_STATE is os.path.expanduser('~/.claude/...') and expanduser reads
+# $HOME, so running the hook subprocess with HOME pointed at a temp directory
+# makes the constant resolve INSIDE that directory: a genuine behavioural test
+# of the fallback that never touches the developer's own file, which exists
+# and carries live state.
+_home = tempfile.mkdtemp()
+_legacy_in_home = os.path.join(_home, '.claude', 'roadmap-cadence-state.json')
+_env_home = dict(os.environ, HOME=_home,
+                 ROADMAP_CADENCE_BIN=fake_roadmap(json.dumps({'unconfigured': True})),
+                 ROADMAP_CADENCE_DAYS='3', ROADMAP_CADENCE_TIMEOUT='10')
+_env_home.pop('ROADMAP_CADENCE_STATE', None)
+_ph = subprocess.run([sys.executable, HOOK], capture_output=True, text=True,
+                     env=_env_home, timeout=30)
+check('fallback: an unconfigured payload with no state_path still nudges',
+      'roadmap init' in _ph.stdout)
+check('fallback: it exits 0', _ph.returncode == 0)
+check('fallback: the nudge marker lands on LEGACY_STATE',
+      os.path.exists(_legacy_in_home))
+
+# MUST-MISS control, same shape: when the payload DOES carry a state_path the
+# marker lands there and the fallback stays untouched. Without this pair the
+# must-hit above would also pass for a hook that wrote to LEGACY_STATE
+# unconditionally, ignoring the payload entirely.
+_home2 = tempfile.mkdtemp()
+_legacy_in_home2 = os.path.join(_home2, '.claude', 'roadmap-cadence-state.json')
+_named_state = os.path.join(tempfile.mkdtemp(), '.roadmap-state.json')
+_env_home2 = dict(os.environ, HOME=_home2,
+                  ROADMAP_CADENCE_BIN=fake_roadmap(json.dumps(
+                      {'unconfigured': True, 'state_path': _named_state})),
+                  ROADMAP_CADENCE_DAYS='3', ROADMAP_CADENCE_TIMEOUT='10')
+_env_home2.pop('ROADMAP_CADENCE_STATE', None)
+_ph2 = subprocess.run([sys.executable, HOOK], capture_output=True, text=True,
+                      env=_env_home2, timeout=30)
+check('control: the nudge still fires when the payload names a state path',
+      'roadmap init' in _ph2.stdout)
+check('control: the marker lands on the path the payload named',
+      os.path.exists(_named_state))
+check('control: and NOT on the fallback',
+      not os.path.exists(_legacy_in_home2))
 
 # --- two-writer contract: write_stamp must not clobber bin/roadmap's fields
 # The state file is shared: bin/roadmap writes 'baselines' and 'last_cut'
