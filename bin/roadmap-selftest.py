@@ -772,6 +772,47 @@ check('no curve without an in-flight version',
       rm.compute_throughput(CURVE_OPEN, CURVE_CLOSED, [], '2026-09-21', None,
                             convention_start='2026-09-20')['curve'], [])
 
+# --- github-kkq4a: the convention_start fallback, both arms ---------------
+# Every call site passes convention_start explicitly, so `if convention_start
+# is None` was structurally unreachable from the suite. Arm 1: cfg supplied,
+# parameter omitted -> cfg['convention_start']. TEST_CFG's is 2026-09-20, so
+# on 2026-10-04 (the unlock day) the share is a real float, exactly as the
+# explicit-parameter AFTER fixture above gets.
+_FB = rm.compute_throughput([], TP_CLOSED, [], '2026-10-04', None)
+check('convention_start falls back to cfg', _FB['on_plan_share_14d'], 1.0)
+# MUST-MISS: the SAME call one day earlier is still inside the warm-up, so the
+# share is None. Without this, a fallback returning any constant would pass.
+check('the cfg fallback still honours warm-up',
+      rm.compute_throughput([], TP_CLOSED, [], '2026-10-03', None)['on_plan_share_14d'],
+      None)
+
+# Arm 2: no cfg AND no module CONFIG -> today(). TP_CLOSED cannot be reused
+# here: with CONFIG cleared, is_human_authored(i) (called with no cfg of its
+# own -- it reads the module CONFIG directly, uncoordinated with the local
+# `cfg` this function resolves) crashes on TypeError the moment it meets a
+# LABELLED closed issue. convention_start's own fallback line runs fine
+# first, but the function never reaches the on_plan_share_14d computation
+# that would let us observe it. Observed by running this arm against
+# TP_CLOSED first. An unlabeled fixture sidesteps that unrelated crash --
+# labels_of() is empty, so the `cfg['auto_label_prefixes']` lookup never
+# executes -- without masking the thing this arm actually tests. Using the
+# REAL current date as both the fixture's close day and the `today` argument
+# keeps the result deterministic rather than a ticking time-bomb:
+# convention_start falls back to datetime.date.today() too, so the gap is
+# always exactly 0 days, inside warm-up on any day this suite runs.
+_saved_cfg = rm.CONFIG
+rm.configure(None)
+_FB2_TODAY = datetime.date.today().isoformat()
+_FB2_CLOSED = [closed_at(_FB2_TODAY, id='fb1')]
+try:
+    check('no cfg and no CONFIG falls back to today (warm-up active)',
+          rm.compute_throughput([], _FB2_CLOSED, [], _FB2_TODAY, None,
+                                cfg=None)['on_plan_share_14d'], None)
+finally:
+    rm.configure(_saved_cfg)
+check('CONFIG restored after the fallback arm (control)',
+      rm.CONFIG['release_namespace'], 'acme-app')
+
 # --- fix round 3: convention_start has ONE source, not two ----------------
 # compute_throughput used to read the hardcoded module CONVENTION_START while
 # evaluate() read state['convention_start'] -- an unparseable or future state
@@ -1135,6 +1176,33 @@ check('malformed-config main() run exits 0', _bad_rc, 0)
 _bad_parsed = json.loads(_bad_out.getvalue())
 check('malformed-config main() --json does NOT carry unconfigured=True (control)',
       _bad_parsed.get('unconfigured'), False)
+
+# The fail-open contract is THREE claims, not one: exit 0, a NAMED reason on
+# stderr, and nothing on stdout in text mode. Only the first was asserted on
+# this path -- _unc_err and _bad_err were captured and dropped (github-kkq4a).
+check('unconfigured main() names the reason on stderr',
+      'roadmap: unavailable:' in _unc_err.getvalue(), True)
+check('unconfigured main() stderr carries the specific reason',
+      'no roadmap.toml found' in _unc_err.getvalue(), True)
+check('malformed-config main() names the reason on stderr',
+      'unknown key(s): oops' in _bad_err.getvalue(), True)
+
+# TEXT MODE on the same branch, never exercised: both existing arms pass
+# --json. An unavailable install must print NOTHING to stdout here -- a board
+# and a silent failure must not be byte-identical.
+rm.load_config = lambda *a, **kw: (_ for _ in ()).throw(
+    rm.RoadmapUnavailable('no roadmap.toml found; run `roadmap init`', unconfigured=True))
+_txt_out, _txt_err = io.StringIO(), io.StringIO()
+try:
+    with contextlib.redirect_stdout(_txt_out), contextlib.redirect_stderr(_txt_err):
+        _txt_rc = rm.main(['--today', '2026-11-01'])
+finally:
+    rm.load_config = _orig_load_config
+check('unconfigured text-mode run exits 0', _txt_rc, 0)
+check('unconfigured text-mode run prints nothing to stdout',
+      _txt_out.getvalue().strip(), '')
+check('unconfigured text-mode run names the reason on stderr',
+      'roadmap: unavailable:' in _txt_err.getvalue(), True)
 
 # Finding 5: pin must reject a version that does not exist, BEFORE writing
 # anything -- a transposed digit must not read as success.
@@ -1910,8 +1978,14 @@ def scan_tree(root, needles=_COUPLED):
             # invalid UTF-8 byte (fix round 1). Read bytes and decode with
             # errors='replace' so the scan still inspects the file's
             # content instead of skipping it; a REPLACEMENT byte cannot
-            # hide a needle since none of the needles contain one. A file
-            # that cannot even be opened (permissions, vanished mid-walk)
+            # hide a needle, because every needle is pure ASCII and
+            # Python never folds a byte < 0x80 into a replacement's maximal
+            # subpart -- verified by the fixtures below, which plant a needle
+            # flush against an invalid byte and against a truncated \xf0\x90\x80
+            # lead. This property is NOT free: it follows from the needles
+            # being ASCII. Adding a non-ASCII needle to _COUPLED voids it, and
+            # the reasoning here must be redone rather than assumed to carry.
+            # A file that cannot even be opened (permissions, vanished mid-walk)
             # is left to raise -- a crashed suite is a loud failure, which
             # is the point, where a silent skip would not be.
             with open(path, 'rb') as fh:
@@ -1961,6 +2035,29 @@ with open(os.path.join(_enc_root, 'bad_encoding.py'), 'wb') as _fh:
     _fh.write(('# %s-mail ' % _COUPLED[0]).encode('utf-8') + b'\xff\xfe')
 check('scan_tree: a coupled string beside an invalid byte is still caught',
       len(scan_tree(_enc_root)) > 0, True)
+
+# github-kkq4a: the ASCII precondition the comment above now states. A needle
+# flush against an invalid byte, and against a truncated 4-byte lead, must
+# still be REPORTED -- the decoder emits U+FFFD for the bad bytes without
+# consuming the ASCII that follows.
+for _label, _prefix in (('an invalid byte', b'\xff'),
+                        ('a truncated f0 lead', b'\xf0'),
+                        ('a truncated f0 90 80 lead', b'\xf0\x90\x80')):
+    _adj_root = tempfile.mkdtemp()
+    with open(os.path.join(_adj_root, 'adjacent.py'), 'wb') as _fh:
+        _fh.write(b'# ' + _prefix + _COUPLED[0].encode('utf-8') + b'-mail\n')
+    check('scan_tree: a needle survives %s flush against it' % _label,
+          len(scan_tree(_adj_root)) > 0, True)
+
+# MUST-MISS: a needle with one of its OWN bytes corrupted is NOT reported --
+# and must not be. The needle is genuinely absent from those bytes; reporting
+# it would mean the scan matches things that are not there.
+_split_root = tempfile.mkdtemp()
+with open(os.path.join(_split_root, 'split.py'), 'wb') as _fh:
+    _fh.write(b'# ' + _COUPLED[0][:2].encode() + b'\xff'
+              + _COUPLED[0][3:].encode() + b'-mail\n')
+check('scan_tree: a needle with a corrupted interior byte is not reported',
+      scan_tree(_split_root), [])
 
 if FAILURES:
     print('FAIL (%d)' % len(FAILURES))
