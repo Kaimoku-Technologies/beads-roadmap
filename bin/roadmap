@@ -1209,8 +1209,10 @@ def plugin_version(root=None):
     lives in plugin.json and marketplace.json, and a third copy is one more
     to forget on release. `root` defaults to the directory above this file's
     bin/, which is the plugin root both in a checkout and in the installed
-    cache. Any failure is a reason, never an exception."""
-    root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cache. realpath, not abspath: outside Claude Code the install is a
+    symlink onto PATH (github-0zf91), and abspath would look for the
+    manifest beside the LINK. Any failure is a reason, never an exception."""
+    root = root or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     path = os.path.join(root, '.claude-plugin', 'plugin.json')
     try:
         with open(path) as fh:
@@ -1244,7 +1246,7 @@ def main(argv=None):
     # the number -- a checkout and the installed plugin can differ.
     if args.show_version:
         version, why = plugin_version()
-        exe = os.path.abspath(__file__)
+        exe = os.path.realpath(__file__)  # the real copy, never the symlink
         if version:
             print('roadmap %s (%s)' % (version, exe))
         else:

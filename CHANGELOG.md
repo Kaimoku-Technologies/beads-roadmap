@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A symlinked `roadmap` knows where it lives.** `roadmap --version`
+  resolved its own location without following symlinks, so installing it
+  with `ln -s <clone>/bin/roadmap ~/.local/bin/roadmap` (the install for
+  agents other than Claude Code) reported `version unknown` and the link's
+  path. It now follows the link to the real copy.
+
 ## [0.3.0] — 2026-09-22
 
 Adds `roadmap --version`, so you can tell which build you are running.

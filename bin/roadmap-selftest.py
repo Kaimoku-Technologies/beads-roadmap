@@ -2363,6 +2363,31 @@ check('--version with no manifest still exits 0', _rc, 0)
 check('--version with no manifest says unknown and why',
       'version unknown' in _out and 'no manifest at /x' in _out, True)
 
+# --- github-0zf91: a SYMLINKED roadmap resolves its own root --------------
+# Outside Claude Code the install is `ln -s <clone>/bin/roadmap ~/.local/bin/`.
+# abspath() keeps the link's own directory, so --version looked for the
+# manifest under ~/.local and reported "version unknown" from the link's path.
+# Run as a real subprocess: __file__ is only the link path when the link is
+# what the interpreter was handed.
+_link_dir = tempfile.mkdtemp()
+_link = os.path.join(_link_dir, 'roadmap')
+os.symlink(MODULE_PATH, _link)
+_via_link = subprocess.run([sys.executable, _link, '--version'],
+                           capture_output=True, text=True, timeout=30)
+_REAL_MODULE = os.path.realpath(MODULE_PATH)
+check('--version through a symlink exits 0', _via_link.returncode, 0)
+check('--version through a symlink finds the real manifest',
+      _via_link.stdout.startswith('roadmap %s ' % _SHIPPED_VERSION), True)
+check('--version through a symlink names the REAL binary',
+      '(%s)' % _REAL_MODULE in _via_link.stdout, True)
+# Control: invoked directly, the same command gives the same answer, so the
+# checks above compare against real behaviour, not a string that happens to
+# match.
+_direct = subprocess.run([sys.executable, MODULE_PATH, '--version'],
+                         capture_output=True, text=True, timeout=30)
+check('--version direct and via symlink agree (control)',
+      _direct.stdout, _via_link.stdout)
+
 # --- decoupling scan ------------------------------------------------------
 # A property test, not an example test: no shipped file may name the
 # workspace this tool came from. The fixture rename above makes a surviving
