@@ -53,7 +53,8 @@ with no state file beside your config, and the SessionStart hook says the same
 thing once in-session.
 
 **Ignoring it is a legitimate choice** — and in every workspace that was not
-the one writing that file, it is the right one. What you give up:
+the one writing that file, it is the right one. What you give up — and the one
+thing you do not:
 
 - **The scope-creep baselines.** The version in flight reports `no baseline
   yet` until you re-baseline it deliberately with `roadmap pin v1.2.0`, or
