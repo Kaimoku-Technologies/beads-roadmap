@@ -55,7 +55,7 @@ def fake_roadmap_sleep(seconds, payload=None):
     return path
 
 
-def run_hook(roadmap_path, days='3', state=None, timeout='10'):
+def run_hook(roadmap_path, days='3', state=None, timeout='10', extra=()):
     if state is None:
         fd, state = tempfile.mkstemp(suffix='.json')
         os.close(fd)
@@ -65,8 +65,8 @@ def run_hook(roadmap_path, days='3', state=None, timeout='10'):
                ROADMAP_CADENCE_STATE=state,
                ROADMAP_CADENCE_DAYS=days,
                ROADMAP_CADENCE_TIMEOUT=timeout)
-    p = subprocess.run([sys.executable, HOOK], capture_output=True, text=True,
-                       env=env, timeout=30)
+    p = subprocess.run([sys.executable, HOOK] + list(extra), capture_output=True,
+                       text=True, env=env, timeout=30)
     return p.returncode, p.stdout, state
 
 
@@ -512,6 +512,54 @@ check('two-writer: last_cut survives the hook stamp',
 check('two-writer: last_reported_at was written',
       _after.get('last_reported_at', 0) > 0)
 os.unlink(_shared_state)
+
+# --- github-3i67y: --text, the same check for agents other than Claude Code -
+# Identical decisions (silence, throttle, bypass, once-ever) -- only the
+# envelope differs: plain lines on stdout instead of Claude Code's
+# hookSpecificOutput JSON, so any hook system, git hook or agent can show it.
+rc, out, _ = run_hook(fake_roadmap(BYPASS), extra=['--text'])
+check('text: a bypass condition speaks', 'HORIZON EMPTY' in out)
+check('text: exits 0', rc == 0)
+check('text: opens with the check banner',
+      out.startswith('ROADMAP CADENCE CHECK'))
+try:
+    json.loads(out)
+    _is_json = True
+except ValueError:
+    _is_json = False
+check('text: output is NOT JSON', _is_json is False)
+# Control: the same payload WITHOUT --text is still the Claude Code envelope,
+# so the flag switched the format rather than the default having changed.
+_, out_json, _ = run_hook(fake_roadmap(BYPASS))
+check('text: default output is still hook JSON (control)',
+      'hookSpecificOutput' in json.loads(out_json or '{}'))
+
+rc, out, _ = run_hook(fake_roadmap(CLEAN), extra=['--text'])
+check('text: a clean board is silent', out == '')
+
+rc, out, st_t = run_hook(fake_roadmap(THROTTLED), extra=['--text'])
+check('text: a throttled condition speaks on a fresh stamp', 'SCOPE CREEP' in out)
+rc, out, _ = run_hook(fake_roadmap(THROTTLED), state=st_t, extra=['--text'])
+check('text: ...and is throttled on the next run', out == '')
+
+rc, out, _ = run_hook(fake_roadmap(UNCONFIGURED), extra=['--text'])
+check('text: the unconfigured nudge prints as plain text',
+      'roadmap init' in out and not out.lstrip().startswith('{'))
+
+# The binary runs under the HOOK'S interpreter, never its shebang. Through
+# the shebang (`/usr/bin/env python3`) a machine whose PATH python3 is 3.9
+# runs roadmap below its floor; it fails open and the check is silent
+# forever -- indistinguishable from a clean board. This fake's shebang names
+# an interpreter that does not exist, so only the hook's own interpreter can
+# make it speak.
+_fd, _nosheb = tempfile.mkstemp(suffix='.py')
+os.close(_fd)
+with open(_nosheb, 'w') as _fh:
+    _fh.write('#!/nonexistent/python3\nimport sys\nsys.stdout.write(%r)\n' % BYPASS)
+os.chmod(_nosheb, 0o755)
+rc, out, _ = run_hook(_nosheb, extra=['--text'])
+check('the binary runs under the hook\'s interpreter, not its shebang',
+      'HORIZON EMPTY' in out)
 
 if FAILURES:
     print('FAIL (%d)' % len(FAILURES))

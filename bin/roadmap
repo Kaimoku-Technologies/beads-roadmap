@@ -1227,8 +1227,8 @@ def plugin_version(root=None):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='roadmap', description='derived product roadmap over bd')
     ap.add_argument('target', nargs='?', default=None,
-                    help="'init', 'hotfix', 'unscheduled', 'plan', 'pin', or a "
-                         "version like v0.17.0")
+                    help="'init', 'hotfix', 'unscheduled', 'plan', 'pin', "
+                         "'check', or a version like v0.17.0")
     ap.add_argument('version', nargs='?', default=None,
                     help='version for plan or pin')
     ap.add_argument('--json', action='store_true', help='machine form (what the hook reads)')
@@ -1252,6 +1252,25 @@ def main(argv=None):
         else:
             print('roadmap version unknown (%s) (%s)' % (why, exe))
         return 0
+
+    # `check` (github-3i67y): the SessionStart drift check as plain text, for
+    # agents other than Claude Code, git hooks and shells. It runs the hook
+    # itself in --text mode rather than re-implementing it, so silence,
+    # throttle, bypass and the once-ever markers stay in ONE place. Before
+    # configuration, because the hook handles "unconfigured" itself.
+    if args.target == 'check':
+        me = os.path.realpath(__file__)
+        hook = os.path.join(os.path.dirname(os.path.dirname(me)),
+                            'hooks', 'roadmap-cadence.py')
+        env = dict(os.environ, ROADMAP_CADENCE_BIN=me)
+        if args.state:
+            env['ROADMAP_CADENCE_STATE'] = args.state
+        try:
+            subprocess.run([sys.executable, hook, '--text'], env=env, timeout=120)
+        except Exception as exc:
+            sys.stderr.write('roadmap: unavailable: check could not run %s: %s\n'
+                             % (hook, exc))
+        return 0  # fail open, like the hook it runs
 
     # init must run BEFORE configure(load_config(...)) below: that call
     # raises RoadmapUnavailable when no config exists yet, which is

@@ -2388,6 +2388,35 @@ _direct = subprocess.run([sys.executable, MODULE_PATH, '--version'],
 check('--version direct and via symlink agree (control)',
       _direct.stdout, _via_link.stdout)
 
+# --- github-3i67y: `roadmap check`, the drift check as plain text ---------
+# End to end, hermetically: a fresh directory with no roadmap.toml above it
+# and ROADMAP_CONFIG unset is the `unconfigured` state, whose once-ever nudge
+# is the one message a board-less run can produce. --state keeps the marker
+# out of the real legacy path. Run THROUGH THE SYMLINK, so finding the hook
+# relies on the same realpath resolution --version does.
+_chk_cwd = tempfile.mkdtemp()
+_chk_state = os.path.join(tempfile.mkdtemp(), 'state.json')
+_chk_env = {k: v for k, v in os.environ.items()
+            if k not in ('ROADMAP_CONFIG', 'CLAUDE_PLUGIN_ROOT')}
+
+
+def _run_check():
+    return subprocess.run([sys.executable, _link, 'check', '--state', _chk_state],
+                          capture_output=True, text=True, timeout=60,
+                          cwd=_chk_cwd, env=_chk_env)
+
+
+_chk1 = _run_check()
+check('check: exits 0', _chk1.returncode, 0)
+check('check: speaks plain text, not hook JSON',
+      'roadmap init' in _chk1.stdout and 'hookSpecificOutput' not in _chk1.stdout, True)
+# Control, opposite direction: the once-ever marker was written to the
+# --state file, so the second run is silent. A `check` that ignored --state
+# (or never reached the hook) could not produce both results.
+_chk2 = _run_check()
+check('check: the nudge prints once (second run silent)', _chk2.stdout, '')
+check('check: wrote its marker to the --state file', os.path.exists(_chk_state), True)
+
 # --- decoupling scan ------------------------------------------------------
 # A property test, not an example test: no shipped file may name the
 # workspace this tool came from. The fixture rename above makes a surviving

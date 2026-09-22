@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`roadmap check`** runs the SessionStart drift check and prints it as
+  plain text, for agents other than Claude Code, git hooks and shells. It
+  makes the same decisions as the Claude Code hook (silent when clean, the
+  same throttle, the same once-only messages) because it runs that hook in
+  a new `--text` mode rather than copying its logic. `--state` works as it
+  does for the board.
+
 ### Fixed
+
+- **The drift check can no longer go silent on the wrong Python.** The hook
+  ran `roadmap` through its `#!/usr/bin/env python3` line, so on a machine
+  whose default `python3` is older than 3.11 the inner run failed open and
+  the check never spoke, which looks exactly like a clean board. It now runs
+  `roadmap` with the same interpreter that started the hook.
 
 - **A symlinked `roadmap` knows where it lives.** `roadmap --version`
   resolved its own location without following symlinks, so installing it

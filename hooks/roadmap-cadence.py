@@ -35,6 +35,11 @@ FIVE PROPERTIES, each of which is a way this could fail
 Output is JSON on stdout as hookSpecificOutput.additionalContext. A hook that
 exits 0 has no other channel to the agent; stderr goes to the terminal only.
 
+With --text (github-3i67y) the SAME decisions print as plain lines instead --
+the form `roadmap check` uses, for agents other than Claude Code, git hooks
+and shells. Only the envelope differs; silence, throttle, bypass and the
+once-ever markers are shared, so the two forms can never disagree.
+
 Testing seams (used by test_roadmap_cadence.py, harmless in production):
     ROADMAP_CADENCE_BIN      path to the roadmap executable
     ROADMAP_CADENCE_STATE    path to the stamp file
@@ -59,8 +64,12 @@ DEFAULT_DAYS = 3.0
 DEFAULT_TIMEOUT = 30
 
 
-def emit(text):
-    """The only output path. Anything else is silence."""
+def emit(text, plain=False):
+    """The only output path. Anything else is silence. `plain` is --text:
+    the bare message, for anything that is not a Claude Code hook."""
+    if plain:
+        print(text)
+        return
     print(json.dumps({
         'hookSpecificOutput': {
             'hookEventName': 'SessionStart',
@@ -180,7 +189,9 @@ def legacy_lines(state_path):
     ]
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    plain = '--text' in argv
     binary = os.environ.get('ROADMAP_CADENCE_BIN', DEFAULT_BIN)
     forced_state = os.environ.get('ROADMAP_CADENCE_STATE')
     try:
@@ -195,7 +206,12 @@ def main():
     if not os.path.exists(binary):
         return 0  # fail open
 
-    argv = [binary, '--json']
+    # sys.executable, never the binary's shebang (github-3i67y): through
+    # `/usr/bin/env python3` a 3.9 PATH interpreter runs roadmap below its
+    # floor, it fails open, and the check is silent forever -- the same
+    # output as a clean board. Whoever started this hook already chose an
+    # interpreter; the binary gets the same one.
+    argv = [sys.executable, binary, '--json']
     if forced_state:
         argv += ['--state', forced_state]
     try:
@@ -251,7 +267,7 @@ def main():
                 'after that until the file exists.)')
             mark_nudged(state)
         if prelude:
-            emit('\n'.join(prelude))
+            emit('\n'.join(prelude), plain=plain)
         return 0  # clean, or an already-reported unconfigured state -> silence
 
     bypass = any(c.get('bypass') for c in conditions)
@@ -263,7 +279,7 @@ def main():
         # to decide about. The throttled condition itself still stays silent,
         # and no stamp is written, exactly as before.
         if prelude:
-            emit('\n'.join(prelude))
+            emit('\n'.join(prelude), plain=plain)
         return 0
 
     lines = list(prelude)
@@ -276,7 +292,7 @@ def main():
     lines.append('(Throttled conditions run at most once every %g days;'
                  ' bypass conditions repeat every session.)' % days)
 
-    emit('\n'.join(lines))
+    emit('\n'.join(lines), plain=plain)
     write_stamp(state)
     return 0
 
