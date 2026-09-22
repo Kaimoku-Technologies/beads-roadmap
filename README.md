@@ -51,12 +51,15 @@ itself** (via `bd list`, not the directory name): if the board carries
 release labels in exactly one namespace, that's the evidence it uses. It
 prints what it found and writes `roadmap.toml`.
 
-It **refuses to guess** on an ambiguous layout — no `.git`, a repo with no
-`v*` tags yet, or a board whose release labels are absent or span more than
-one namespace — rather than writing a config that would silently render a
-clean, empty board. (The directory name appears only as a last-resort
-suggestion in that refusal, never as a value it writes on its own.) In that
-case, copy `roadmap.example.toml` and fill in the three keys by hand.
+A repo with **no `v*` tags yet** doesn't stop it: `init` prints a warning and
+writes `roadmap.toml` anyway. Refusing there used to send people off to
+hand-write the file, which walks straight past the namespace probe — the one
+thing here that genuinely cannot be guessed. It still **refuses to guess**,
+writing nothing, on an actually ambiguous layout: no `.git`, or a board whose
+release labels are absent or span more than one namespace. (The directory
+name appears only as a last-resort suggestion in that refusal, never as a
+value it writes on its own.) In that case, copy `roadmap.example.toml` and
+fill in the three keys by hand.
 
 ## Conventions your board must already follow
 
