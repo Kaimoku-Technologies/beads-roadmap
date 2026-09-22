@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 roadmap.toml
 .claude/worktrees/
+
+# roadmap's per-install state (scope-creep baseline + hook throttle stamp).
+# It lives beside roadmap.toml and is per-checkout, never shared.
+.roadmap-state.json

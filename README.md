@@ -7,10 +7,10 @@ baseline. It ships a SessionStart hook that reports planning drift and stays
 silent when there is none.
 
 The tool never writes to `bd` — no label, no comment, no field. The only
-local state it keeps is a small state file (the scope-creep baseline plus
-the SessionStart hook's throttle stamp), and that file exists precisely so
-it can be compared against a fresh `bd` read on the next run, not as a cache
-of it.
+local state it keeps is a small state file next to your `roadmap.toml` (the
+scope-creep baseline plus the SessionStart hook's throttle stamp), and that
+file exists precisely so it can be compared against a fresh `bd` read on the
+next run, not as a cache of it.
 
 ## Install
 
@@ -24,12 +24,32 @@ point Claude Code's plugin loader at this directory directly.)
 
 ## First run: `roadmap init`
 
-Before anything else, run `roadmap init` once per workspace. It probes the
-directory layout — is this a git checkout, does it carry semver `v*` tags —
-and reads the release-label namespace off the **board itself** (via `bd
-list`, not the directory name): if the board carries release labels in
-exactly one namespace, that's the evidence it uses. It prints what it found
-and writes `roadmap.toml`.
+Before anything else, run `init` once per workspace. **Inside a Claude Code
+session** — where the plugin's `bin/` is on your `PATH` — that is:
+
+```
+/roadmap init
+```
+
+Outside a session, bare `roadmap` will not resolve: `PATH` only carries the
+plugin's `bin/` because Claude Code injects it. Call it by path instead:
+
+```
+~/.claude/plugins/cache/beads-roadmap/roadmap/<version>/bin/roadmap init
+```
+
+**It writes `roadmap.toml` into the current working directory**, so run it
+from the directory you want to be the root of this install — normally the
+workspace `bd` runs in. Relative paths inside the file resolve against the
+file, never against your shell's cwd. The state file (`.roadmap-state.json`,
+the scope-creep baseline plus the hook's throttle stamp) lands next to it; add
+it to your `.gitignore`.
+
+It probes the directory layout — is this a git checkout, does it carry
+semver `v*` tags — and reads the release-label namespace off the **board
+itself** (via `bd list`, not the directory name): if the board carries
+release labels in exactly one namespace, that's the evidence it uses. It
+prints what it found and writes `roadmap.toml`.
 
 It **refuses to guess** on an ambiguous layout — no `.git`, a repo with no
 `v*` tags yet, or a board whose release labels are absent or span more than
@@ -78,6 +98,25 @@ version rather than the newest that works, so a 3.12-or-later-only construct
 cannot slip in unnoticed; CI then runs the suites on 3.11, 3.12 and 3.13 to
 prove the newer ones still pass.
 
+**`bd` (beads).** The tool shells out to exactly one read, twice:
+
+```
+bd list --status=open   -n 0 --json
+bd list --status=closed -n 0 --json
+```
+
+and reads these fields off each row: `id`, `title`, `labels`, `issue_type`,
+`priority`, `parent`, `updated_at`. `-n 0` is mandatory — `bd list` silently
+truncates otherwise.
+
+**Verified against `bd` 1.2.2. No lower bound has been tested**, so no minimum
+is claimed here: an older `bd` may well work, and stating a floor that was
+never exercised would be a guess wearing the costume of a fact. If yours is
+older, check it emits those flags and fields. A `bd` that rejects the flags
+exits non-zero and `roadmap` fails open with a named reason; one that omits
+`labels` would render an empty board instead, which is why the check is worth
+doing by hand.
+
 ## `github-*` ids in code comments
 
 Several comments and docstrings in this codebase cite ids like `github-4jmwr`
@@ -89,7 +128,7 @@ tracker; don't follow them expecting a link to work.
 ## Design
 
 See [`docs/DESIGN.md`](docs/DESIGN.md) for the short public design: what
-"derived, not stored" means concretely, the seven drift conditions the
+"derived, not stored" means concretely, the eight drift conditions the
 SessionStart hook can report, and the fail-open contract that keeps a broken
 or unconfigured install from ever breaking a session.
 

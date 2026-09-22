@@ -15,10 +15,11 @@ relabeled out from under a stale tag? By recomputing on every run instead,
 there is no cache to invalidate and no drift between what the board says and
 what the tool reports — the two facts are the same fact, read twice.
 
-The only state the tool keeps at all is a small local file (`--state`,
-`~/.claude/roadmap-cadence-state.json` by default) holding four fields, none
-of them authoritative over `bd` — each exists only to be compared against a
-fresh read:
+The only state the tool keeps at all is a small local file (`--state`
+overrides it; by default it lives beside `roadmap.toml`, as
+`.roadmap-state.json` — per install, not shared across workspaces) holding
+four fields, none of them authoritative over `bd` — each exists only to be
+compared against a fresh read:
 
 - `last_reported_at` — when the SessionStart hook last spoke. Governs its
   throttle (default: at most once every 3 days, except for bypass
@@ -44,15 +45,15 @@ on a version the tool has never seen before either). Condition 6 only fires
 on a run where `last_cut` was already recorded from a *previous* run and the
 current cut differs from it.
 
-## The SessionStart hook and its seven conditions
+## The SessionStart hook and its eight conditions
 
 A roadmap that must be visited to matter will not be visited once a board has
 any real size. `hooks/roadmap-cadence.py` runs `roadmap --json` at session
-start and, when the render surfaces one or more of seven conditions, prints a
+start and, when the render surfaces one or more of eight conditions, prints a
 short report into the session's context. When there is nothing to report, it
 prints nothing — silence is the default outcome, not a fallback.
 
-The seven conditions `evaluate()` can raise, in order:
+The eight conditions `evaluate()` can raise, in order:
 
 1. **Horizon empty** — nothing is tagged above the version in flight (or
    above the last cut tag, if nothing is in flight). There is no plan beyond
@@ -83,18 +84,25 @@ The seven conditions `evaluate()` can raise, in order:
    condition 1's job) and silent when at least one label matches the
    configured namespace, even alongside others that don't — a mixed,
    multi-product workspace is normal, not a misconfiguration.
+8. **No version tags** — `tag_repo` carries no semver `v*` tags at all, so
+   nothing has been cut yet. Every version is shown as **planned** rather
+   than any one being "in flight," which is honest but needs explaining on a
+   repo that genuinely never cut a release. `roadmap init` warns on this same
+   state instead of refusing to configure it — this is the render-time half
+   of that one finding, not a second finding.
 
 Each condition is either **throttled** (reported at most once every N days,
 default 3) or marked **bypass** (repeats every session regardless of
-throttle). Conditions 1, 4, 6, and 7 always bypass, because each names a
+throttle). Conditions 1, 4, 6, 7, and 8 always bypass, because each names a
 state that shouldn't be sat in: no plan, an unscheduled severe issue, a
-just-cut version with nothing queued behind it, or a namespace that matches
-nothing on the board. Condition 5's bypass is **conditional on what's in the
-queue**: it bypasses whenever the queue holds a priority-0/1 issue, and is
-plain-throttled — like conditions 2 and 3 — when everything in it is
-P2-security-only. A P0/P1 hotfix repeats every session until it is either
-versioned or downgraded; a P2-security-only queue gets the same
-at-most-once-every-3-days treatment as scope creep or off-plan share.
+just-cut version with nothing queued behind it, a namespace that matches
+nothing on the board, or a repo that has never cut a tag. Condition 5's
+bypass is **conditional on what's in the queue**: it bypasses whenever the
+queue holds a priority-0/1 issue, and is plain-throttled — like conditions 2
+and 3 — when everything in it is P2-security-only. A P0/P1 hotfix repeats
+every session until it is either versioned or downgraded; a P2-security-only
+queue gets the same at-most-once-every-3-days treatment as scope creep or
+off-plan share.
 
 ## Fail-open, always
 
