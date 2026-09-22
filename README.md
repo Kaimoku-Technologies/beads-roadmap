@@ -22,6 +22,54 @@ next run, not as a cache of it.
 (If you're working from a local checkout instead of a marketplace listing,
 point Claude Code's plugin loader at this directory directly.)
 
+## Upgrading from 0.1.x
+
+0.2.0 moved the state file. It was one file per machine:
+
+```
+~/.claude/roadmap-cadence-state.json
+```
+
+and it is now one per install, beside your `roadmap.toml`:
+
+```
+<the directory holding roadmap.toml>/.roadmap-state.json
+```
+
+**Nothing is migrated automatically, on purpose.** The old file was shared by
+every workspace on the machine, so it holds whatever the last workspace to run
+`roadmap` left there — in most workspaces, *another* product's numbers.
+Seeding every install from it would hand them all the same baselines, and a
+wrong baseline is the false-clean signal this tool exists to prevent.
+
+Copy it **only if this is the workspace that was using it**:
+
+```
+cp ~/.claude/roadmap-cadence-state.json <dir>/.roadmap-state.json
+```
+
+`roadmap` prints that line with both paths filled in the first time it runs
+with no state file beside your config, and the SessionStart hook says the same
+thing once in-session.
+
+**Ignoring it is a legitimate choice** — and in every workspace that was not
+the one writing that file, it is the right one. What you give up:
+
+- **The scope-creep baselines.** The version in flight reports `no baseline
+  yet` until you re-baseline it deliberately with `roadmap pin v1.2.0`, or
+  until the next tag is cut and the tool snapshots the new version itself.
+- **`last_cut`.** The first run records where the tag train stands now and
+  baselines nothing, so a tag cut between your last 0.1.x run and this one
+  goes unannounced.
+- **Not the warm-up start**, as long as your `roadmap.toml` sets
+  `convention_start` — `roadmap init` writes it, and an absent state file is
+  seeded from it. If you hand-wrote a config without that key, warm-up
+  restarts from today and the off-plan condition stays quiet for 14 days.
+
+Add `.roadmap-state.json` to your `.gitignore`. Once every workspace you care
+about has been dealt with, the old file can be deleted; the only thing still
+reading that path is the fallback for an install with no `roadmap.toml` at all.
+
 ## First run: `roadmap init`
 
 Before anything else, run `init` once per workspace. **Inside a Claude Code

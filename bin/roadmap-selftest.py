@@ -1204,6 +1204,75 @@ with tempfile.TemporaryDirectory() as _d:
     check('an existing convention_start survives a configured one (control)',
           json.load(open(_cs_state))['convention_start'], '2026-05-05')
 
+# --- C1 / I5 (github-kkq4a): the 0.1.x -> 0.2.0 state-move notice ---------
+# There is deliberately no automatic migration -- seeding the new per-install
+# file from the old global one would hand EVERY workspace the same baselines.
+# The notice is the whole delivery mechanism, and stderr reaches nobody under
+# the SessionStart hook (capture_output=True, p.stderr never read), so --json
+# carries a flag the hook keys on. rm.LEGACY_STATE is monkeypatched to a temp
+# path: the real one exists on a developer's machine and carries live state,
+# which would make these arms pass or fail for the wrong reason.
+_orig_legacy = rm.LEGACY_STATE
+with tempfile.TemporaryDirectory() as _d:
+    _legacy = os.path.join(_d, 'roadmap-cadence-state.json')
+    with open(_legacy, 'w') as _fh:
+        json.dump({'baselines': {'0.16.0': ['x']}, 'last_cut': '0.16.0'}, _fh)
+    _new = os.path.join(_d, '.roadmap-state.json')
+    rm.LEGACY_STATE = _legacy
+    try:
+        # MUST-HIT: legacy file present, new file absent.
+        _rc, _out, _err = _run_main(['--json', '--state', _new,
+                                     '--today', '2026-11-01'],
+                                    open_issues=[], closed_issues=[], tag_dates=[])
+        check('--json carries legacy_state_available when the legacy file is'
+              ' the only one', json.loads(_out).get('legacy_state_available'), True)
+        check('the notice names the legacy path', _legacy in _err, True)
+        check('the notice names the new path', _new in _err, True)
+        check('the notice gives the exact cp',
+              'cp %s %s' % (_legacy, _new) in _err, True)
+        # I5: the legacy file belongs to whichever workspace last wrote it, so
+        # the notice must not claim it holds THIS install's baselines -- in
+        # every other workspace that is false, and following it imports another
+        # product's numbers. The three must-hits above prove the text is
+        # non-empty, so this must-miss is not vacuous.
+        check('the notice does not call them this install\'s baselines',
+              'this install' in _err.lower(), False)
+        check('the notice says the file may be another workspace\'s',
+              'another workspace' in _err, True)
+        check('the notice names the re-baseline escape hatch',
+              'roadmap pin' in _err, True)
+
+        # MUST-MISS control: the run above called save_state, so the new file
+        # now exists -- the second run must go quiet in BOTH channels. The flag
+        # is keyed on the new file's absence, not merely on the legacy file
+        # being there.
+        check('the first run created the new state file (control)',
+              os.path.exists(_new), True)
+        _rc, _out, _err = _run_main(['--json', '--state', _new,
+                                     '--today', '2026-11-01'],
+                                    open_issues=[], closed_issues=[], tag_dates=[])
+        check('legacy_state_available is False once the new file exists',
+              json.loads(_out).get('legacy_state_available'), False)
+        check('the notice does not reprint once the new file exists',
+              _err.strip(), '')
+    finally:
+        rm.LEGACY_STATE = _orig_legacy
+
+# MUST-MISS control: no legacy file at all -- the overwhelmingly common case
+# for a fresh install, where the right action is to say nothing.
+with tempfile.TemporaryDirectory() as _d:
+    rm.LEGACY_STATE = os.path.join(_d, 'no-such-legacy.json')
+    try:
+        _rc, _out, _err = _run_main(['--json',
+                                     '--state', os.path.join(_d, 'state.json'),
+                                     '--today', '2026-11-01'],
+                                    open_issues=[], closed_issues=[], tag_dates=[])
+        check('legacy_state_available is False with no legacy file',
+              json.loads(_out).get('legacy_state_available'), False)
+        check('no notice with no legacy file', _err.strip(), '')
+    finally:
+        rm.LEGACY_STATE = _orig_legacy
+
 # I8: main()'s --json payload must carry `unconfigured` so the SessionStart
 # hook can speak exactly once for a fresh install (no roadmap.toml at all)
 # while staying silent for every other unavailable reason. This exercises

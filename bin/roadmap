@@ -463,6 +463,39 @@ def default_state_path(cfg=None):
     return os.path.join(os.path.dirname(path), '.roadmap-state.json')
 
 
+def legacy_notice(state_path, legacy=None):
+    """-> the one-time 0.1.x -> 0.2.0 state-move notice, newline-terminated.
+
+    A named function rather than an inline write so the suite can assert on
+    the exact wording a user sees, and so the two other surfaces carrying the
+    same message -- the SessionStart hook's additionalContext and the README's
+    upgrade section -- have one text to be checked against.
+
+    WHOSE file the legacy path holds is the load-bearing part (github-kkq4a,
+    I5). It was shared by EVERY workspace on the machine, so in every
+    workspace but the last one to write it, the baselines inside belong to
+    some other product. Earlier wording said "to keep THIS INSTALL'S
+    scope-creep baselines, copy it once" -- false everywhere else, and
+    following it imports another product's baselines, which is precisely the
+    corruption no-automatic-migration exists to refuse. It also fired in
+    brand-new workspaces that never had baselines at all, where the right
+    action is to ignore it.
+    """
+    legacy = LEGACY_STATE if legacy is None else legacy
+    return ('roadmap: state now lives beside roadmap.toml, at\n'
+            '    %s\n'
+            'A state file from before 0.2.0 is still at\n'
+            '    %s\n'
+            'That file was shared by EVERY workspace on this machine, so it\n'
+            'may hold another workspace\'s scope-creep baselines. Copy it ONLY\n'
+            'if this is the workspace that was using it:\n'
+            '    cp %s %s\n'
+            'Otherwise ignore it and re-baseline with `roadmap pin <version>`.\n'
+            'Nothing is copied automatically: a WRONG baseline is the\n'
+            'false-clean signal this tool exists to prevent.\n'
+            % (state_path, legacy, legacy, state_path))
+
+
 def baseline_key(v):
     return '%d.%d.%d' % v
 
@@ -892,6 +925,7 @@ def render_json(model, conditions, cfg=None):
         'throughput': model.get('throughput') or {},
         'conditions': conditions,
         'state_path': model.get('state_path'),
+        'legacy_state_available': bool(model.get('legacy_state_available')),
     }, indent=2)
 
 
@@ -1175,18 +1209,33 @@ def main(argv=None):
     # escape hatch for a deliberately shared file.
     state_path = args.state or default_state_path(CONFIG)
 
-    # One-time notice, never an automatic copy. Auto-seeding the new file from
-    # the legacy global one would hand EVERY workspace the same baselines, so
-    # two products would each inherit the other's. `no baseline yet` is an
-    # honest state this design deliberately keeps (refresh_baselines refuses to
-    # invent a plan-at-cut-time); a WRONG baseline is the false-clean signal it
-    # exists to prevent. This prints once in practice: save_state creates the
-    # file before the next run.
-    if not os.path.exists(state_path) and os.path.exists(LEGACY_STATE):
-        sys.stderr.write(
-            'roadmap: state now lives beside roadmap.toml. To keep this '
-            'install\'s scope-creep baselines, copy it once:\n'
-            '    cp %s %s\n' % (LEGACY_STATE, state_path))
+    # Notice, never an automatic copy. Auto-seeding the new file from the
+    # legacy global one would hand EVERY workspace the same baselines, so two
+    # products would each inherit the other's. `no baseline yet` is an honest
+    # state this design deliberately keeps (refresh_baselines refuses to invent
+    # a plan-at-cut-time); a WRONG baseline is the false-clean signal it exists
+    # to prevent.
+    #
+    # Computed HERE, before the load_issues() block below, for two reasons:
+    # save_state later in this same run creates state_path, so a flag computed
+    # after it would always read False; and this notice has to reach a user
+    # whose bd or git is down too.
+    #
+    # It normally prints on ONE run only -- that same save_state makes
+    # `not os.path.exists(state_path)` false forever after. It is NOT
+    # guaranteed once: this check sits BEFORE the try below, so a run where bd
+    # or git is unavailable never reaches save_state and the notice reprints on
+    # the next run, until one run gets through. That is the safe direction for
+    # a message the user has to act on.
+    #
+    # stderr reaches a human running `roadmap` in a terminal and NOBODY else:
+    # the SessionStart hook runs the binary with capture_output=True and never
+    # reads p.stderr. `legacy_state_available` in --json is what actually
+    # delivers this to a hook user (github-kkq4a, C1).
+    legacy_state_available = (not os.path.exists(state_path)
+                              and os.path.exists(LEGACY_STATE))
+    if legacy_state_available:
+        sys.stderr.write(legacy_notice(state_path))
 
     try:
         opened, closed = load_issues()
@@ -1243,6 +1292,10 @@ def main(argv=None):
     # no access to args, and the SessionStart hook needs the resolved path to
     # stamp the SAME file rather than computing its own (github-kkq4a, I3).
     model['state_path'] = state_path
+    # Same pattern again (github-kkq4a, C1): the hook is the only surface that
+    # reaches a session user, and it cannot see the stderr notice above. This
+    # flag is what lets it say the same thing once, through additionalContext.
+    model['legacy_state_available'] = legacy_state_available
 
     if args.target == 'pin':
         v = parse_version(args.version or '')

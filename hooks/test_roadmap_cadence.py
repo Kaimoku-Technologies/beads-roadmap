@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 HOOK = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'roadmap-cadence.py')
@@ -127,6 +128,113 @@ check('unconfigured: does not repeat the nudge (speaks ONCE)', out2.strip() == '
 rc3, out3, _ = run_hook(fake_roadmap(UNAVAILABLE_ORDINARY))
 check('ordinary unavailable reason: exits 0', rc3 == 0)
 check('ordinary unavailable reason: stays silent (control)', out3.strip() == '')
+
+# --- C1 (github-kkq4a): the 0.1.x -> 0.2.0 state-move notice --------------
+# The binary writes it to stderr, which this hook discards, and the same run
+# creates the new state file so the binary never writes it again. The measured
+# result before this fix: run 1 emitted the notice to a discarded stream, run 2
+# was silent, and nobody on the default install path ever saw it. The hook now
+# re-emits it through additionalContext, once, on a dedicated marker.
+LEGACY_PATH = os.path.expanduser('~/.claude/roadmap-cadence-state.json')
+_MOVED_STATE = '/tmp/some-workspace/.roadmap-state.json'
+LEGACY_CLEAN = json.dumps({'state_path': _MOVED_STATE,
+                           'legacy_state_available': True,
+                           'conditions': []})
+
+# MUST-HIT: a CLEAN board -- the case that matters, since an upgrading install
+# is usually not in drift, and the `not conditions` early return used to make
+# this path silent by construction.
+fd, _lg_state = tempfile.mkstemp(suffix='.json')
+os.close(fd)
+os.unlink(_lg_state)
+rc, out, _ = run_hook(fake_roadmap(LEGACY_CLEAN), state=_lg_state)
+check('state move: speaks on a CLEAN board', 'ROADMAP STATE MOVED' in out)
+check('state move: exits 0', rc == 0)
+check('state move: names the legacy path', LEGACY_PATH in out)
+check('state move: names the new path', _MOVED_STATE in out)
+check('state move: gives the exact cp',
+      'cp %s %s' % (LEGACY_PATH, _MOVED_STATE) in out)
+# I5: the legacy file belongs to whichever workspace last wrote it, so this
+# must not tell the reader it holds THIS install's baselines -- following that
+# in any other workspace imports another product's numbers.
+check('state move: does not call them this install\'s baselines',
+      'this install' not in out.lower())
+check('state move: says the file may be another workspace\'s',
+      'another workspace' in out)
+check('state move: names the re-baseline escape hatch', 'roadmap pin' in out)
+
+# The marker is DEDICATED: reusing last_reported_at would let this message
+# suppress a real throttled condition for the rest of the window.
+_lg_after = json.load(open(_lg_state))
+check('state move: records its own marker key',
+      _lg_after.get('legacy_state_reported') is True)
+check('state move: does not consume the throttle stamp',
+      not _lg_after.get('last_reported_at'))
+
+# MUST-MISS: the SAME state file, second run -- it speaks ONCE even though the
+# binary still reports the flag (the legacy file is still there; the user may
+# well have chosen to ignore it, which is a legitimate choice).
+rc2, out2, _ = run_hook(fake_roadmap(LEGACY_CLEAN), state=_lg_state)
+check('state move: does not repeat (speaks ONCE)', out2.strip() == '')
+check('state move: exits 0 on the second run', rc2 == 0)
+
+# MUST-MISS control: the same clean payload WITHOUT the flag is silent, so the
+# message is keyed on the flag rather than on any clean board.
+fd, _lg_ctl = tempfile.mkstemp(suffix='.json')
+os.close(fd)
+os.unlink(_lg_ctl)
+_, out3, _ = run_hook(fake_roadmap(json.dumps({'state_path': _MOVED_STATE,
+                                               'legacy_state_available': False,
+                                               'conditions': []})),
+                      state=_lg_ctl)
+check('state move: silent when the flag is False (control)', out3.strip() == '')
+
+# MUST-HIT: the 3-day throttle must not swallow it. Seed a FRESH stamp so the
+# non-bypass condition in the payload is throttled, and assert the state-move
+# lines arrive while the throttled condition stays silent -- both directions in
+# one run.
+fd, _lg_thr = tempfile.mkstemp(suffix='.json')
+os.close(fd)
+with open(_lg_thr, 'w') as _fh:
+    json.dump({'last_reported_at': time.time(),
+               'baselines': {'0.16.0': ['a', 'b']}}, _fh)
+_, out4, _ = run_hook(fake_roadmap(json.dumps(
+    {'state_path': _MOVED_STATE, 'legacy_state_available': True,
+     'conditions': [{'id': 2, 'bypass': False,
+                     'lines': ['SCOPE CREEP -- v0.16.0 grew.']}]})),
+    state=_lg_thr)
+check('state move: survives the throttle', 'ROADMAP STATE MOVED' in out4)
+check('state move: the throttled condition beside it stays silent',
+      'SCOPE CREEP' not in out4)
+# Two-writer: the marker write is read-modify-write, like write_stamp.
+check('state move: the marker write preserves bin/roadmap\'s fields',
+      json.load(open(_lg_thr)).get('baselines') == {'0.16.0': ['a', 'b']})
+
+# MUST-MISS control for the arm above: the SAME throttled payload without the
+# flag is wholly silent, so the throttle still throttles.
+fd, _lg_thr2 = tempfile.mkstemp(suffix='.json')
+os.close(fd)
+with open(_lg_thr2, 'w') as _fh:
+    json.dump({'last_reported_at': time.time()}, _fh)
+_, out5, _ = run_hook(fake_roadmap(THROTTLED), state=_lg_thr2)
+check('state move: a throttled condition alone is still silent (control)',
+      out5.strip() == '')
+
+# MUST-HIT: with a bypass condition the hook reports BOTH, in one JSON object
+# (emit() writes one, and a second would not parse).
+fd, _lg_both = tempfile.mkstemp(suffix='.json')
+os.close(fd)
+os.unlink(_lg_both)
+_, out6, _ = run_hook(fake_roadmap(json.dumps(
+    {'state_path': _MOVED_STATE, 'legacy_state_available': True,
+     'conditions': [{'id': 1, 'bypass': True,
+                     'lines': ['HORIZON EMPTY -- nothing tagged above v0.16.0.']}]})),
+    state=_lg_both)
+check('state move: rides along with a real report', 'ROADMAP STATE MOVED' in out6)
+check('state move: the real report is not lost', 'HORIZON EMPTY' in out6)
+check('state move: still exactly one JSON object',
+      json.loads(out6 or '{}').get('hookSpecificOutput', {})
+      .get('hookEventName') == 'SessionStart')
 
 # --- SILENT arms ----------------------------------------------------------
 rc, out, _ = run_hook(fake_roadmap(CLEAN))

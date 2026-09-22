@@ -9,12 +9,17 @@ the push. It follows the contract of the two cadence hooks already here.
 FIVE PROPERTIES, each of which is a way this could fail
 -------------------------------------------------------
 1. SILENT WHEN CLEAN. A hook that speaks every session gets ignored and then
-   torn out, leaving neither the hook nor the roadmap.
+   torn out, leaving neither the hook nor the roadmap. The two ONCE-EVER
+   messages are the stated exceptions: the `roadmap init` nudge for an
+   install with no roadmap.toml, and the 0.1.x -> 0.2.0 state-move notice.
+   Each is keyed on its own marker in the state file and never repeats.
 2. THROTTLED (default 3 days -- shorter than the other two hooks' 7, because
    planning drift moves faster than a Dolt commit count), EXCEPT conditions
    flagged `bypass`, which repeat every session because they are states that
    should not be sittable-in: an empty horizon means the roadmap does not
-   exist, and an unversioned P0/P1 is a planning bug.
+   exist, and an unversioned P0/P1 is a planning bug. The two once-ever
+   messages above bypass the throttle too -- it governs how often drift is
+   RE-reported, and a message that is delivered once has nothing to repeat.
 3. READ-ONLY, ALWAYS. It runs `bin/roadmap --json` and nothing else. It never
    applies a label. The suite walks this file's AST for argv list literals
    and checks them against a set of write verbs.
@@ -87,20 +92,23 @@ def write_stamp(path):
         pass  # Failing to record is not worth breaking a session over.
 
 
-def already_nudged(path):
-    """I8: has the one-time "run `roadmap init`" nudge already fired for
-    this state file? A DEDICATED key, never `last_reported_at` -- reusing
-    the normal throttle stamp would let this nudge's own write suppress a
-    real, throttled condition (e.g. scope creep) reported shortly after
-    init, for up to the rest of the throttle window."""
+def _flag(path, key):
+    """-> the boolean `key` recorded in the state file, False if it cannot
+    be read. Absent or corrupt must behave like "never said", so the first
+    run after install still speaks."""
     try:
         with open(path) as fh:
-            return bool(json.load(fh).get('unconfigured_reported'))
+            return bool(json.load(fh).get(key))
     except Exception:
         return False
 
 
-def mark_nudged(path):
+def _record_flag(path, key):
+    """Set one boolean in the state file, READ-MODIFY-WRITE. The file has two
+    writers -- bin/roadmap owns `baselines` and `last_cut`, this hook owns its
+    own keys -- so a whole-file overwrite here would silently wipe creep
+    detection and the endless "no baseline yet" would look like correct
+    behaviour."""
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
@@ -108,11 +116,65 @@ def mark_nudged(path):
                 state = json.load(fh)
         except Exception:
             state = {}
-        state['unconfigured_reported'] = True
+        state[key] = True
         with open(path, 'w') as fh:
             json.dump(state, fh)
     except Exception:
-        pass  # Failing to record just means the nudge repeats next time.
+        pass  # Failing to record just means the message repeats next time.
+
+
+def already_nudged(path):
+    """I8: has the one-time "run `roadmap init`" nudge already fired for
+    this state file? A DEDICATED key, never `last_reported_at` -- reusing
+    the normal throttle stamp would let this nudge's own write suppress a
+    real, throttled condition (e.g. scope creep) reported shortly after
+    init, for up to the rest of the throttle window."""
+    return _flag(path, 'unconfigured_reported')
+
+
+def mark_nudged(path):
+    _record_flag(path, 'unconfigured_reported')
+
+
+def already_legacy_reported(path):
+    """C1 (github-kkq4a): has the one-time 0.1.x -> 0.2.0 state-move notice
+    already fired for this state file? Its OWN key, for exactly the reason
+    `unconfigured_reported` has one: a message that borrowed
+    `last_reported_at` would suppress an unrelated throttled condition, and a
+    message that borrowed `unconfigured_reported` would be silenced by a nudge
+    it has nothing to do with."""
+    return _flag(path, 'legacy_state_reported')
+
+
+def mark_legacy_reported(path):
+    _record_flag(path, 'legacy_state_reported')
+
+
+def legacy_lines(state_path):
+    """The 0.1.x -> 0.2.0 state-move message, worded to match bin/roadmap's
+    stderr notice (`legacy_notice`) and the README's "Upgrading from 0.1.x"
+    section -- one message, three surfaces.
+
+    WHOSE file the legacy path holds is the load-bearing part: it was shared
+    by EVERY workspace on this machine, so in every workspace but the last one
+    to write it, the baselines inside belong to another product. Wording that
+    tells the reader to keep "this install's baselines" is false there and
+    imports another product's numbers -- the corruption that having no
+    automatic migration exists to refuse.
+    """
+    return [
+        'ROADMAP STATE MOVED (roadmap 0.2.0, github-kkq4a)',
+        'State now lives beside roadmap.toml, at %s' % state_path,
+        'A state file from before 0.2.0 is still at %s' % LEGACY_STATE,
+        'That file was shared by EVERY workspace on this machine, so it may'
+        ' hold another workspace\'s scope-creep baselines. Copy it ONLY if'
+        ' this is the workspace that was using it:',
+        '    cp %s %s' % (LEGACY_STATE, state_path),
+        'Otherwise ignore it and re-baseline with `roadmap pin <version>`.'
+        ' Nothing is copied automatically: a WRONG baseline is the false-clean'
+        ' signal this tool exists to prevent.',
+        '(This prints once.)',
+    ]
 
 
 def main():
@@ -153,6 +215,22 @@ def main():
     # has no config directory for state to sit beside. The known consequence
     # is that a SECOND never-configured workspace is not nudged again.
     state = forced_state or payload.get('state_path') or LEGACY_STATE
+
+    # C1 (github-kkq4a): 0.2.0 moved the state file and deliberately does NOT
+    # migrate it -- auto-seeding would hand every workspace the same baselines.
+    # The binary announces that on stderr, which this hook discards
+    # (capture_output=True, and p.stderr is never read), and the same run
+    # creates the new state file, so the binary's own notice never prints
+    # again either. additionalContext is the only channel that reaches a
+    # session, so the message is re-emitted here, once, on its own marker.
+    #
+    # Collected into a list rather than emitted on the spot: emit() writes one
+    # JSON object on stdout and a second object would not parse.
+    prelude = []
+    if payload.get('legacy_state_available') and not already_legacy_reported(state):
+        prelude = legacy_lines(payload.get('state_path') or state)
+        mark_legacy_reported(state)
+
     conditions = payload.get('conditions')
     if not conditions:
         # I8: `unconfigured` is the ONE unavailable reason that
@@ -164,18 +242,29 @@ def main():
         # normal throttle stamp) so a fresh, never-configured install is
         # not silent forever, without turning into a permanent nag either.
         if payload.get('unconfigured') and not already_nudged(state):
-            emit('No roadmap.toml found -- run `roadmap init` once per '
-                 'workspace to set this up. (This prints once; silent '
-                 'after that until the file exists.)')
+            prelude.append(
+                'No roadmap.toml found -- run `roadmap init` once per '
+                'workspace to set this up. (This prints once; silent '
+                'after that until the file exists.)')
             mark_nudged(state)
+        if prelude:
+            emit('\n'.join(prelude))
         return 0  # clean, or an already-reported unconfigured state -> silence
 
     bypass = any(c.get('bypass') for c in conditions)
     throttled = (time.time() - read_stamp(state)) < days * 86400
     if throttled and not bypass:
+        # The state-move notice is bypass-class and must not be swallowed by
+        # the 3-day throttle: that throttle governs how often DRIFT is
+        # re-reported, and this is a one-time message about state the user has
+        # to decide about. The throttled condition itself still stays silent,
+        # and no stamp is written, exactly as before.
+        if prelude:
+            emit('\n'.join(prelude))
         return 0
 
-    lines = ['ROADMAP CADENCE CHECK (roadmap, github-4jmwr)']
+    lines = list(prelude)
+    lines.append('ROADMAP CADENCE CHECK (roadmap, github-4jmwr)')
     for c in conditions:
         if throttled and not c.get('bypass'):
             continue

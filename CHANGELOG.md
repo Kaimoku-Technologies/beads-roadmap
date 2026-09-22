@@ -18,9 +18,12 @@ Deferred hardening from the cold-start review.
   and `unconfigured_reported` — so two products at the same version, or a
   throwaway run from a scratch repo, silently overwrote each other.
   **There is no automatic migration**, on purpose: seeding the new file from
-  the old one would hand every workspace the same baselines. `roadmap` prints
-  a one-time `cp` line naming both paths; run it if you want to keep your
-  scope-creep baselines, or ignore it and re-baseline with `roadmap pin`.
+  the old one would hand every workspace the same baselines. `roadmap` names
+  both paths and the `cp`, and the SessionStart hook says the same thing once
+  in-session — the old file was shared, so it may hold *another* workspace's
+  baselines, and copying it is right only in the workspace that was using it.
+  Ignoring it costs a re-baseline with `roadmap pin`. See
+  [Upgrading from 0.1.x](README.md#upgrading-from-01x).
 - **A repo with no semver `v*` tags no longer shows its lowest version as "in
   flight".** Nothing has been cut, so nothing is in flight and every labelled
   version is reported as planned, with a new drift condition naming the state.
@@ -38,6 +41,10 @@ Deferred hardening from the cold-start review.
 
 - `state_path` in the `--json` payload, so the SessionStart hook stamps the
   file the binary actually resolved rather than computing its own.
+- `legacy_state_available` in the `--json` payload, and a one-time
+  `additionalContext` message in the SessionStart hook keyed on it. The
+  binary's own notice goes to stderr, which the hook discards, so on the
+  default install path the state move reached nobody.
 - `CHANGELOG.md` (this file).
 
 ### Documentation
