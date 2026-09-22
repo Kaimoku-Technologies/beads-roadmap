@@ -209,7 +209,7 @@ design exists to refuse):
 
 ```
 NO VERSION TAGS -- <tag_repo> carries no semver v* tags, so nothing has been cut.
-  No version is in flight, and every version below is shown as PLANNED.
+  No version is in flight, and every version above is shown as PLANNED.
   Cut a tag (e.g. `git tag v0.1.0`) for roadmap to tell shipped from planned.
 ```
 
@@ -221,8 +221,23 @@ NO VERSION TAGS -- <tag_repo> carries no semver v* tags, so nothing has been cut
 | condition 5 | prints `(no in-flight version)` | already handled |
 | `render_board` | skips the IN FLIGHT block; hotfix header shows `(none)`; `creep: n/a — no version in flight` | already handled |
 | `compute_throughput` | `curve` stays `[]` | already handled |
-| `refresh_baselines` | `cut_key` is `None`, so the `last_cut is None` branch is taken every run and `cut_advanced` stays `False` | **correct** — no tag was cut |
+| `refresh_baselines` | `cut_key` is `None`. On a state file with no `last_cut` the first-run branch is taken and `cut_advanced` stays `False`. On one carrying a PRIOR `last_cut` the values differ, so `cut_advanced` is set `True` | **needs a fix** — see below |
 | `roadmap plan` | `pick = model['planned']`, which is non-empty | already handled |
+
+The `refresh_baselines` row above was specified wrong in the first draft (it
+claimed `cut_advanced` stays `False` and called that correct), and a test was
+written to match it that could not fail. The real behaviour, on a state file
+that already carried a `last_cut`: `cut_key` is `None`, `None != '0.15.0'`, so
+`cut_advanced` becomes `True` and condition 6 announces *"a tag was cut, a new
+version is now in flight"* in the same report where condition 8 says *"no
+semver `v*` tags, so nothing has been cut"*. Two conditions, opposite claims.
+
+**Condition 6 is suppressed when `model['no_tags']` is true.** The tag train
+did move — backwards: the tags were deleted, or the state file came from a
+different repo. A cut that went *away* is not a cut that advanced.
+`refresh_baselines` still sets the flag and still updates `last_cut` (the flag
+is the only way the change is visible at all, and `last_cut` must track
+reality); only the announcement is withheld.
 
 Conditions 1 and 8 overlap only where they should. Condition 1 keys on `not
 planned`, so on a tagless board that *does* carry release labels it now stays

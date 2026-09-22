@@ -699,7 +699,19 @@ def evaluate(model, state, today, cfg=None):
     # schedule, the human is already here, and the question "what goes in the
     # version after next" is live precisely now. It fires once per cut, so it
     # needs no throttle.
-    if model.get('cut_advanced'):
+    #
+    # Suppressed when there are no tags at all (github-kkq4a, I3). cut_key is
+    # None on a tagless repo, so a state file carrying a PRIOR last_cut makes
+    # `cut_key != state['last_cut']` true and refresh_baselines sets
+    # cut_advanced -- the tag train moved, but BACKWARDS: the tags were deleted
+    # or the state file came from a different repo. Announcing "a tag was cut,
+    # a new version is now in flight" beside condition 8's "no semver v* tags,
+    # so nothing has been cut" prints two conditions that contradict each
+    # other, and the one that is wrong is this one. A cut that went AWAY is not
+    # a cut that advanced. refresh_baselines still records the change (it has
+    # to -- the flag is how the advance is visible at all, and last_cut must
+    # track reality); only the announcement is withheld.
+    if model.get('cut_advanced') and not model.get('no_tags'):
         nxt = (model.get('planned') or [None])[0]
         lines = ['A TAG WAS CUT since the last run -- %s is now in flight.'
                  % (_fmt_v(in_flight) if in_flight else 'a new version')]

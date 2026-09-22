@@ -1517,9 +1517,14 @@ check('a matching board under a DIFFERENT configured namespace is clean',
 NT_CONDS = rm.evaluate(NT, state(), '2026-09-21')
 _c8 = [c for c in NT_CONDS if c['id'] == 8]
 check('condition 8 fires with no tags', len(_c8), 1)
-check('condition 8 is bypass', _c8[0]['bypass'], True)
+# Both reads below are GUARDED by `bool(_c8) and ...` (github-kkq4a): _c8[0]
+# is indexed right after a check() that RECORDS a failure without aborting,
+# so an empty _c8 would raise IndexError here and truncate the rest of the
+# run -- turning one failing assertion into a suite that never reaches its
+# remaining arms. The guard makes the failure land in FAILURES instead.
+check('condition 8 is bypass', bool(_c8) and _c8[0]['bypass'], True)
 check('condition 8 names the tag_repo',
-      any(TEST_CFG['tag_repo'] in l for l in _c8[0]['lines']), True)
+      bool(_c8) and any(TEST_CFG['tag_repo'] in l for l in _c8[0]['lines']), True)
 # MUST-MISS: with a tag cut, condition 8 is silent.
 check('condition 8 is silent with a tag (control)',
       [c for c in rm.evaluate(WT, state(), '2026-09-21') if c['id'] == 8], [])
@@ -1534,10 +1539,43 @@ _cold = rm.evaluate(rm.build_model([], [], []), state(), '2026-09-21')
 check('a wholly cold board hears both 1 and 8',
       sorted(c['id'] for c in _cold if c['id'] in (1, 8)), [1, 8])
 
-# refresh_baselines must never claim a cut advanced when there are no tags.
-_nt_state = state(last_cut=None)
-rm.refresh_baselines(NT, _nt_state)
-check('no tags: cut_advanced is never True', NT['cut_advanced'], False)
+# github-kkq4a, I3: conditions 6 and 8 must not contradict each other.
+#
+# The assertion here used to be `state(last_cut=None)` -> `cut_advanced is
+# False`, which could not fail: with last_cut None, refresh_baselines takes
+# its first-run branch and sets cut_advanced False unconditionally, before
+# no_tags is consulted by anything. It duplicated 'first run does not report
+# an advance' above and said nothing about tags -- and the property it named
+# was false. With a PRIOR last_cut and no tags, cut_key is None, the values
+# differ, and cut_advanced really is True.
+#
+# A fresh model, not NT: refresh_baselines mutates the model it is handed, and
+# NT is the shared fixture the condition-8 arms above read.
+_nt_adv = rm.build_model(NT_OPEN, [], [])
+_nt_adv_state = state(last_cut='0.15.0')
+rm.refresh_baselines(_nt_adv, _nt_adv_state)
+check('no tags with a prior last_cut: the change IS flagged',
+      _nt_adv['cut_advanced'], True)
+_nt_adv_conds = conds(_nt_adv, _nt_adv_state)
+# MUST-MISS: the flag is set, and condition 6 still stays quiet -- a cut that
+# went AWAY is not a cut that advanced. Deleting the `not model['no_tags']`
+# guard in evaluate() fails this line.
+check('c6 is suppressed on a tagless board', 6 in _nt_adv_conds, False)
+# MUST-HIT on the same board: condition 8 is the one that describes it, so
+# the suppression above is condition 6 being wrong here, not the board being
+# silent.
+check('c8 still names the tagless board (control)', 8 in _nt_adv_conds, True)
+
+# MUST-HIT control, same fixture shape but WITH a tag cut: the suppression is
+# keyed on no_tags, not on refresh_baselines' flag, so a real advance still
+# reports. Without this pair, deleting condition 6 outright would pass.
+_wt_adv = rm.build_model(NT_OPEN, [], [(0, 15, 0)])
+_wt_adv_state = state(last_cut='0.14.0')
+rm.refresh_baselines(_wt_adv, _wt_adv_state)
+check('with tags, a prior last_cut still flags the change (control)',
+      _wt_adv['cut_advanced'], True)
+check('c6 still fires when a real tag advanced (control)',
+      6 in conds(_wt_adv, _wt_adv_state), True)
 
 # --- config layer ---------------------------------------------------------
 def write_cfg(text, name='roadmap.toml'):
