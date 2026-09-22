@@ -1086,7 +1086,7 @@ check('condition-2 board omits "none since baseline"',
 # These exercise real CLI-level behaviour (argument parsing, exit codes,
 # stdout/stderr, the on-disk state file) without shelling to bd or git.
 def _run_main(argv, open_issues=None, closed_issues=None, tag_dates=None,
-              raise_unavailable=None):
+              raise_unavailable=None, cfg=None):
     orig_li, orig_ltd = rm.load_issues, rm.load_tag_dates
     # main() (Task B3) now calls configure(load_config(...)) before
     # load_issues(). Stub load_config the same way load_issues/load_tag_dates
@@ -1096,9 +1096,15 @@ def _run_main(argv, open_issues=None, closed_issues=None, tag_dates=None,
     # take the RoadmapUnavailable branch regardless of what the test asked
     # for. Returning TEST_CFG keeps CONFIG exactly what the suite already
     # configured at import time.
+    #
+    # `cfg` overrides what that stub returns, for the arms that need a config
+    # DIFFERING from TEST_CFG (github-kkq4a, I2: a config with no
+    # convention_start at all). main() calls configure() on whatever comes
+    # back, so the module global is restored explicitly below -- otherwise an
+    # override would leak into every later assertion in the file.
     orig_lc = rm.load_config
 
-    rm.load_config = lambda *a, **kw: dict(TEST_CFG)
+    rm.load_config = lambda *a, **kw: dict(cfg if cfg is not None else TEST_CFG)
 
     def _li(*a, **kw):
         if raise_unavailable is not None:
@@ -1115,6 +1121,7 @@ def _run_main(argv, open_issues=None, closed_issues=None, tag_dates=None,
         rm.load_issues = orig_li
         rm.load_tag_dates = orig_ltd
         rm.load_config = orig_lc
+        rm.configure(TEST_CFG)
     return rc, out_buf.getvalue(), err_buf.getvalue()
 
 
@@ -1151,6 +1158,51 @@ with tempfile.TemporaryDirectory() as _d:
                                 open_issues=[], closed_issues=[], tag_dates=[])
     check('--json reports the resolved state path',
           json.loads(_out).get('state_path'), _sp)
+
+# I2 (github-kkq4a): roadmap.toml's convention_start must seed an ABSENT state
+# file. load_state alone seeds its `today` argument, so before the fix every
+# install that started from an absent state file (i.e. every install, once the
+# state file became per-install) silently restarted its 14-day warm-up and
+# rendered a convention-start date contradicting its own roadmap.toml.
+# MUST-HIT: TEST_CFG's convention_start is 2026-09-20 and --today is
+# 2026-11-01, so the two are distinguishable -- the state file must carry the
+# CONFIGURED date.
+with tempfile.TemporaryDirectory() as _d:
+    _cs_state = os.path.join(_d, '.roadmap-state.json')
+    _rc, _out, _err = _run_main(['--json', '--state', _cs_state,
+                                 '--today', '2026-11-01'],
+                                open_issues=[], closed_issues=[], tag_dates=[])
+    check('a configured convention_start seeds an absent state file',
+          json.load(open(_cs_state))['convention_start'],
+          TEST_CFG['convention_start'])
+
+# MUST-MISS control: a config carrying NO convention_start at all still seeds
+# today, so the fix reads the key rather than hardcoding a second source of
+# truth. (A config loaded through load_config always HAS the key -- it seeds
+# today itself -- so this shape only reaches main() from a hand-built cfg,
+# which is exactly what CONFIG.get() has to survive.)
+with tempfile.TemporaryDirectory() as _d:
+    _cs_state = os.path.join(_d, '.roadmap-state.json')
+    _no_cs = {k: v for k, v in TEST_CFG.items() if k != 'convention_start'}
+    _rc, _out, _err = _run_main(['--json', '--state', _cs_state,
+                                 '--today', '2026-11-01'],
+                                open_issues=[], closed_issues=[], tag_dates=[],
+                                cfg=_no_cs)
+    check('an absent configured convention_start still seeds today (control)',
+          json.load(open(_cs_state))['convention_start'], '2026-11-01')
+
+# MUST-MISS control: an EXISTING state file keeps its own convention_start --
+# the config seeds an absent file, it does not overwrite a recorded warm-up
+# start on every run (which would suppress condition 3 forever).
+with tempfile.TemporaryDirectory() as _d:
+    _cs_state = os.path.join(_d, '.roadmap-state.json')
+    with open(_cs_state, 'w') as _fh:
+        json.dump({'convention_start': '2026-05-05'}, _fh)
+    _rc, _out, _err = _run_main(['--json', '--state', _cs_state,
+                                 '--today', '2026-11-01'],
+                                open_issues=[], closed_issues=[], tag_dates=[])
+    check('an existing convention_start survives a configured one (control)',
+          json.load(open(_cs_state))['convention_start'], '2026-05-05')
 
 # I8: main()'s --json payload must carry `unconfigured` so the SessionStart
 # hook can speak exactly once for a fresh install (no roadmap.toml at all)

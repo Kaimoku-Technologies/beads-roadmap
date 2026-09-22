@@ -1191,7 +1191,26 @@ def main(argv=None):
             print(json.dumps({'unavailable': str(exc)}))
         return 0
 
-    st = load_state(state_path, today=args.today)
+    # The warm-up starts where roadmap.toml says it starts (github-kkq4a, I2).
+    # load_state seeds an ABSENT convention_start from its `today` argument and
+    # never reads CONFIG; while one global state file was shared by every
+    # workspace the value was almost never absent, so the configured key was
+    # effectively unreachable. With a per-install state file every upgrading
+    # install now starts from an absent file, which made the configured value
+    # dead on the primary path: the board printed a convention-start date
+    # contradicting the roadmap.toml `init` itself annotates as governing the
+    # warm-up, and condition 3 stayed suppressed for another 14 days with
+    # nothing explaining why.
+    #
+    # load_config validates this value as an ISO date (and seeds it to today
+    # itself when the file omits it), so nothing unvalidated reaches here. The
+    # corrupt-state-file bias still holds where it matters -- the seed never
+    # comes from the file that failed to parse. It comes from roadmap.toml,
+    # and a configured start in the past legitimately means warm-up has
+    # already elapsed: that is the user's own stated convention age, not a
+    # date recovered from a file we just failed to read.
+    st = load_state(state_path,
+                    today=(CONFIG.get('convention_start') or args.today))
 
     model = build_model(opened, closed, tags)
     model['throughput'] = compute_throughput(
