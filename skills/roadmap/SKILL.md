@@ -24,6 +24,7 @@ file moved in 0.2.0; see the README's "Upgrading from 0.1.x".
   scope-creep snapshot
 - `roadmap init` — write `roadmap.toml` (once per
   workspace)
+- `roadmap --version` — which plugin version is running, and from which path
 
 ## Reading the output
 

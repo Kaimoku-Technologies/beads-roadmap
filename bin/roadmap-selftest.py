@@ -2291,6 +2291,78 @@ check('the hook reads `unconfigured` by that name',
 check('a key neither side uses is found in neither (control)',
       'legacy_state_migrated' in _HOOK_SRC, False)
 
+# --- github-zv9qt: roadmap --version ---------------------------------------
+# The version is read from the plugin's own .claude-plugin/plugin.json at run
+# time -- no third copy to bump. An unreadable manifest is a reason, never a
+# crash: --version must fail open like everything else here.
+def _manifest_root(body):
+    root = tempfile.mkdtemp()
+    if body is not None:
+        os.makedirs(os.path.join(root, '.claude-plugin'))
+        with open(os.path.join(root, '.claude-plugin', 'plugin.json'), 'w',
+                  encoding='utf-8') as _fh:
+            _fh.write(body)
+    return root
+
+
+check('--version reads plugin.json',
+      rm.plugin_version(_manifest_root('{"name": "roadmap", "version": "9.8.7"}')),
+      ('9.8.7', None))
+for _label, _body in (('a missing manifest', None),
+                      ('an unparseable manifest', '{not json'),
+                      ('a manifest with no version', '{"name": "roadmap"}')):
+    _v, _why = rm.plugin_version(_manifest_root(_body))
+    check('--version: %s gives no version' % _label, _v, None)
+    check('--version: %s gives a reason' % _label, bool(_why), True)
+
+# MUST-HIT against the REAL tree: the default root is this repo, and it must
+# report exactly what the shipped manifest says.
+_REPO_ROOT = os.path.dirname(os.path.dirname(MODULE_PATH))
+with open(os.path.join(_REPO_ROOT, '.claude-plugin', 'plugin.json')) as _fh:
+    _SHIPPED_VERSION = json.load(_fh)['version']
+check('--version default root reports the shipped manifest',
+      rm.plugin_version(), (_SHIPPED_VERSION, None))
+
+
+def _run_main(argv):
+    """-> (rc, stdout, raised). load_config is booby-trapped, so a --version
+    that touched configuration surfaces as `raised`, not as a pass."""
+    _orig_lc = rm.load_config
+
+    def _trap(*a, **kw):
+        raise AssertionError('load_config reached')
+    rm.load_config = _trap
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            rc = rm.main(argv)
+        return rc, buf.getvalue(), None
+    except AssertionError as exc:
+        return None, buf.getvalue(), str(exc)
+    finally:
+        rm.load_config = _orig_lc
+
+
+_rc, _out, _raised = _run_main(['--version'])
+check('--version needs no roadmap.toml', _raised, None)
+check('--version exits 0', _rc, 0)
+check('--version prints the version', _out.startswith('roadmap %s' % _SHIPPED_VERSION), True)
+check('--version names the binary that answered', MODULE_PATH in _out, True)
+# MUST-HIT control: WITHOUT --version the same harness does reach load_config,
+# so the None above means --version skipped it, not that the trap is dead.
+check('the load_config trap fires on a normal run (control)',
+      _run_main([])[2], 'load_config reached')
+# An unreadable manifest still answers, exit 0, with the reason.
+_orig_pv = rm.plugin_version
+rm.plugin_version = lambda root=None: (None, 'no manifest at /x')
+try:
+    _rc, _out, _raised = _run_main(['--version'])
+finally:
+    rm.plugin_version = _orig_pv
+check('--version with no manifest still exits 0', _rc, 0)
+check('--version with no manifest says unknown and why',
+      'version unknown' in _out and 'no manifest at /x' in _out, True)
+
 # --- decoupling scan ------------------------------------------------------
 # A property test, not an example test: no shipped file may name the
 # workspace this tool came from. The fixture rename above makes a surviving

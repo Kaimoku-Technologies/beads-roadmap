@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`roadmap --version`** (and `/roadmap --version`) prints the plugin
+  version and the path of the `roadmap` that answered, e.g.
+  `roadmap 0.2.1 (/path/to/bin/roadmap)`. It reads the version from the
+  plugin's own `.claude-plugin/plugin.json`, so releases still bump only the
+  two manifests, and it works without a `roadmap.toml`. If the manifest
+  can't be read it prints `version unknown` with the reason and still exits 0.
+
 ### Fixed
 
 - **The self-test no longer passes without running.** On Python older than

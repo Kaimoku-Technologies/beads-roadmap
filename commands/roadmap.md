@@ -28,6 +28,8 @@ Run the roadmap board and report it.
   yet. Relay whichever one it printed; never upgrade the second into the
   first.
 - A version like `v1.2.0` → `roadmap v1.2.0`
+- `--version` → `roadmap --version` — the plugin version and the path of the
+  binary that answered. Works without a `roadmap.toml`.
 - `pin <version>` → `roadmap pin <version>`, which
   re-baselines that version's scope-creep snapshot. Only run this when the
   growth has been accepted deliberately — it discards the evidence of what

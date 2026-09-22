@@ -127,6 +127,7 @@ outside a session; see above).
 | `/roadmap plan v1.2.0` | The same for a specific version |
 | `/roadmap pin v1.2.0` | Re-baselines that version's scope-creep snapshot |
 | `/roadmap init` | Writes `roadmap.toml` (once per workspace, see above) |
+| `/roadmap --version` | The plugin version, and the path of the `roadmap` that answered |
 
 Every command rebuilds everything from a fresh `bd` read, so there is nothing
 to refresh or sync: run it whenever you want the current picture.
@@ -241,6 +242,14 @@ config, `bd` missing, Python too old), it prints `roadmap: unavailable: …` on
 stderr, puts the reason under an `unavailable` key in JSON, and **still exits
 0** so it can never break a session. Check for that key rather than trusting
 the exit code.
+
+**Check which version you're running.** `roadmap --version` prints something
+like `roadmap 0.2.1 (/path/to/bin/roadmap)`. It works without a
+`roadmap.toml`. The path matters as much as the number: updating the plugin
+only takes effect after you restart Claude Code, and a local checkout can
+differ from the installed copy. To pick up a new release, run
+`/plugin marketplace update beads-roadmap`, then
+`/plugin update roadmap@beads-roadmap`, then restart.
 
 Other flags: `--today YYYY-MM-DD` renders the board as of another date (for
 the day-count windows and warm-up), `--state PATH` uses a different state

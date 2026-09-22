@@ -1201,6 +1201,27 @@ def cmd_init(root, today, out, force=False, run=None, load_issues_fn=None):
     return 0
 
 
+def plugin_version(root=None):
+    """-> (version, None) or (None, reason), read from the plugin's own
+    .claude-plugin/plugin.json (github-zv9qt).
+
+    Read at run time rather than copied into a constant: the version already
+    lives in plugin.json and marketplace.json, and a third copy is one more
+    to forget on release. `root` defaults to the directory above this file's
+    bin/, which is the plugin root both in a checkout and in the installed
+    cache. Any failure is a reason, never an exception."""
+    root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, '.claude-plugin', 'plugin.json')
+    try:
+        with open(path) as fh:
+            version = json.load(fh).get('version')
+    except (OSError, ValueError) as exc:
+        return None, 'cannot read %s: %s' % (path, exc)
+    if not version:
+        return None, 'no "version" in %s' % path
+    return version, None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='roadmap', description='derived product roadmap over bd')
     ap.add_argument('target', nargs='?', default=None,
@@ -1213,7 +1234,22 @@ def main(argv=None):
     ap.add_argument('--today', default=datetime.date.today().isoformat())
     ap.add_argument('--force', action='store_true',
                     help='overwrite an existing roadmap.toml')
+    # dest is not 'version': that name is the positional above (plan/pin).
+    ap.add_argument('--version', dest='show_version', action='store_true',
+                    help='print the plugin version and which binary answered')
     args = ap.parse_args(argv)
+
+    # Before configuration, like init: "which version is installed?" must be
+    # answerable where no roadmap.toml exists. The path matters as much as
+    # the number -- a checkout and the installed plugin can differ.
+    if args.show_version:
+        version, why = plugin_version()
+        exe = os.path.abspath(__file__)
+        if version:
+            print('roadmap %s (%s)' % (version, exe))
+        else:
+            print('roadmap version unknown (%s) (%s)' % (why, exe))
+        return 0
 
     # init must run BEFORE configure(load_config(...)) below: that call
     # raises RoadmapUnavailable when no config exists yet, which is
