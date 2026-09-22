@@ -2169,8 +2169,8 @@ _COUPLED = ('ku' + 'ju', 'mac' + 'ole', 'shao' + 'lynx')
 
 
 def scan_tree(root, needles=_COUPLED):
-    """Walk `root` for shipped files and return a sorted list of
-    'relpath: needle' entries -- the exact walk -> filter -> read -> match
+    """Scan `root`'s shipped files (see _shipped_files) and return a sorted
+    list of 'relpath: needle' entries -- the exact list -> filter -> read -> match
     -> append pipeline the real gate runs, factored out so the must-hit and
     must-miss fixtures below exercise the SAME code the real check uses,
     not a decoupled reimplementation of its pieces (fix round 1: the old
@@ -2185,6 +2185,60 @@ def scan_tree(root, needles=_COUPLED):
     now.
     """
     hits = []
+    for path in _shipped_files(root):
+        fn = os.path.basename(path)
+        if not (fn.endswith(('.py', '.md', '.json', '.toml', '.yml'))
+                or fn == 'roadmap'):
+            continue
+        # A read failure must never read as "no hits" -- that is the
+        # exact false negative the old `except Exception: continue`
+        # produced for a file containing a coupled string plus one
+        # invalid UTF-8 byte (fix round 1). Read bytes and decode with
+        # errors='replace' so the scan still inspects the file's
+        # content instead of skipping it; a REPLACEMENT byte cannot
+        # hide a needle, because every needle is pure ASCII and
+        # Python never folds a byte < 0x80 into a replacement's maximal
+        # subpart -- verified by the fixtures below, which plant a needle
+        # flush against an invalid byte and against a truncated \xf0\x90\x80
+        # lead. This property is NOT free: it follows from the needles
+        # being ASCII. Adding a non-ASCII needle to _COUPLED voids it, and
+        # the reasoning here must be redone rather than assumed to carry.
+        # A file that cannot even be opened (permissions, vanished mid-walk)
+        # is left to raise -- a crashed suite is a loud failure, which
+        # is the point, where a silent skip would not be.
+        with open(path, 'rb') as fh:
+            text = fh.read().decode('utf-8', errors='replace').lower()
+        for needle in needles:
+            if needle in text:
+                hits.append('%s: %s' % (os.path.relpath(path, root), needle))
+    return sorted(hits)
+
+
+def _shipped_files(root):
+    """Every file under `root` that could ship, as absolute paths.
+
+    Inside a git work tree that is what git would publish: tracked files
+    plus untracked ones NOT ignored (they ship on the next `git add -A`).
+    Walking the disk instead made an ignored local file -- a developer's
+    .claude/settings.local.json, a nested .claude/worktrees/ checkout --
+    fail the gate, a verdict about local debris rather than the tree
+    (github-9rwrl). Outside a work tree (the tempdir fixtures, an unpacked
+    tarball) nothing is ignored, so every file on disk is what ships.
+    """
+    probe = subprocess.run(['git', '-C', root, 'rev-parse', '--is-inside-work-tree'],
+                           capture_output=True, text=True)
+    if probe.returncode == 0 and probe.stdout.strip() == 'true':
+        # check=True: a git tree whose listing FAILS must crash the suite,
+        # never fall through to an empty list that reads as "clean".
+        out = subprocess.run(['git', '-C', root, 'ls-files', '-z', '--cached',
+                              '--others', '--exclude-standard'],
+                             check=True, capture_output=True).stdout
+        paths = sorted({os.path.join(root, p) for p in
+                        out.decode('utf-8', errors='surrogateescape').split('\0') if p})
+        # A tracked file deleted from the work tree (or a submodule entry) is
+        # listed by --cached but has no content to scan and will not ship.
+        return [p for p in paths if os.path.isfile(p)]
+    paths = []
     for dirpath, dirnames, filenames in os.walk(root):
         # .git is the real object store -- enormous, and its contents are
         # handled by B7's orphan-branch squash, not this scan.
@@ -2196,33 +2250,8 @@ def scan_tree(root, needles=_COUPLED):
         # a gate that cannot see into the one directory holding the CI
         # config is not a gate. Do not restore this exclusion.
         dirnames[:] = [d for d in dirnames if d not in ('.git', '__pycache__')]
-        for fn in filenames:
-            if not (fn.endswith(('.py', '.md', '.json', '.toml', '.yml'))
-                     or fn == 'roadmap'):
-                continue
-            path = os.path.join(dirpath, fn)
-            # A read failure must never read as "no hits" -- that is the
-            # exact false negative the old `except Exception: continue`
-            # produced for a file containing a coupled string plus one
-            # invalid UTF-8 byte (fix round 1). Read bytes and decode with
-            # errors='replace' so the scan still inspects the file's
-            # content instead of skipping it; a REPLACEMENT byte cannot
-            # hide a needle, because every needle is pure ASCII and
-            # Python never folds a byte < 0x80 into a replacement's maximal
-            # subpart -- verified by the fixtures below, which plant a needle
-            # flush against an invalid byte and against a truncated \xf0\x90\x80
-            # lead. This property is NOT free: it follows from the needles
-            # being ASCII. Adding a non-ASCII needle to _COUPLED voids it, and
-            # the reasoning here must be redone rather than assumed to carry.
-            # A file that cannot even be opened (permissions, vanished mid-walk)
-            # is left to raise -- a crashed suite is a loud failure, which
-            # is the point, where a silent skip would not be.
-            with open(path, 'rb') as fh:
-                text = fh.read().decode('utf-8', errors='replace').lower()
-            for needle in needles:
-                if needle in text:
-                    hits.append('%s: %s' % (os.path.relpath(path, root), needle))
-    return sorted(hits)
+        paths.extend(os.path.join(dirpath, fn) for fn in filenames)
+    return paths
 
 
 check('no shipped file names the origin workspace', scan_tree(_ROOT), [])
@@ -2287,6 +2316,47 @@ with open(os.path.join(_split_root, 'split.py'), 'wb') as _fh:
               + _COUPLED[0][3:].encode() + b'-mail\n')
 check('scan_tree: a needle with a corrupted interior byte is not reported',
       scan_tree(_split_root), [])
+
+# --- github-9rwrl: inside a git work tree, "shipped" means what git ships ---
+# The walk used to read every file on disk, so an untracked, git-IGNORED
+# .claude/settings.local.json in a developer's checkout failed the real gate
+# above -- a verdict about local debris, not about the tree. Each fixture is
+# its own `git init` repo, and the ignore rule lives in the fixture's own
+# .gitignore so the result never depends on the runner's global ignore file.
+def _git_fixture(files, ignore='', stage=()):
+    root = tempfile.mkdtemp()
+    subprocess.run(['git', 'init', '-q', root], check=True, capture_output=True)
+    if ignore:
+        files = dict(files, **{'.gitignore': ignore})
+    for rel, body in files.items():
+        os.makedirs(os.path.join(root, os.path.dirname(rel)), exist_ok=True)
+        with open(os.path.join(root, rel), 'w', encoding='utf-8') as _fh:
+            _fh.write(body)
+    if stage:
+        subprocess.run(['git', '-C', root, 'add', '--'] + list(stage),
+                       check=True, capture_output=True)
+    return root
+
+
+_NEEDLE_LINE = '# %s-mail\n' % _COUPLED[0]
+_git_root = _git_fixture(
+    {'tracked.py': _NEEDLE_LINE,
+     '.github/workflows/new.yml': _NEEDLE_LINE,
+     'local/settings.local.json': _NEEDLE_LINE},
+    ignore='local/\n', stage=('tracked.py',))
+_git_hits = scan_tree(_git_root)
+# MUST-MISS: the ignored file never ships, so it is not a finding.
+check('scan_tree: a git-ignored file is not scanned',
+      any(h.startswith('local') for h in _git_hits), False)
+# MUST-HIT: a TRACKED file is still scanned -- without this, a git mode that
+# returned nothing at all would pass the must-miss above.
+check('scan_tree: a tracked file in a git tree is still scanned',
+      'tracked.py: %s' % _COUPLED[0] in _git_hits, True)
+# MUST-HIT: an untracked but NOT ignored file ships on the next `git add -A`,
+# so it counts -- and it sits under .github/workflows, the directory fix
+# round 0 wrongly excluded. A git mode using --cached alone would miss it.
+check('scan_tree: an untracked, unignored .github file is still scanned',
+      any('.github' in h and 'new.yml' in h for h in _git_hits), True)
 
 if FAILURES:
     print('FAIL (%d)' % len(FAILURES))

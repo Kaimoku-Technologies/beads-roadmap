@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   config (not the one passed in) decided which closed issues counted as
   auto-filed. Latent: the CLI never passes an explicit cfg, so the two always
   agreed in practice.
+- **The self-test's decoupling scan checks what git would ship, not
+  everything on disk.** Inside a git checkout it now lists tracked plus
+  untracked-but-not-ignored files, so an ignored local file (such as
+  `.claude/settings.local.json`) no longer fails the suite. Outside git it
+  still scans every file.
 
 ## [0.2.0] — 2026-09-22
 
