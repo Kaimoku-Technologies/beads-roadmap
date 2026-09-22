@@ -197,7 +197,12 @@ def load_config(path=None, start=None, env=None, today=None):
             'tag_repo': _resolve(raw['tag_repo']),
             'release_namespace': raw['release_namespace'],
             'convention_start': started,
-            'auto_label_prefixes': tuple(raw.get('auto_label_prefixes') or ())}
+            'auto_label_prefixes': tuple(raw.get('auto_label_prefixes') or ()),
+            # Where this config was loaded FROM, so the state file can default
+            # beside it (github-kkq4a, I3). Deliberately NOT in CONFIG_KEYS:
+            # that tuple validates the raw TOML, so a user who writes
+            # config_path by hand still gets the unknown-key refusal.
+            'config_path': os.path.realpath(path)}
 
 
 def parse_version(text):
@@ -432,14 +437,37 @@ def build_model(open_issues, closed_issues, tags):
             'namespace_mismatch': _namespace_mismatch(open_issues, closed_issues)}
 
 
-DEFAULT_STATE = os.path.expanduser('~/.claude/roadmap-cadence-state.json')
+# The pre-github-kkq4a location: ONE file for every workspace on the machine.
+# Kept only as the fallback for a caller that configured by hand (no
+# config_path) and as the path the migration notice names.
+LEGACY_STATE = os.path.expanduser('~/.claude/roadmap-cadence-state.json')
+
+
+def default_state_path(cfg=None):
+    """-> where this install's state file lives: beside its roadmap.toml.
+
+    One global file (I3) collided on FIVE fields, not one -- last_cut,
+    baselines (keyed by bare version), convention_start, last_reported_at and
+    unconfigured_reported. Keying baselines by namespace would have fixed one
+    row and left the observed symptom (a scratch repo overwriting the live
+    last_cut) in place.
+
+    A cfg with no config_path -- a caller that configured by hand rather than
+    through load_config -- falls back to LEGACY_STATE rather than raising, so
+    no call site can KeyError on a dict it built itself.
+    """
+    cfg = cfg or CONFIG
+    path = (cfg or {}).get('config_path')
+    if not path:
+        return LEGACY_STATE
+    return os.path.join(os.path.dirname(path), '.roadmap-state.json')
 
 
 def baseline_key(v):
     return '%d.%d.%d' % v
 
 
-def load_state(path=DEFAULT_STATE, today=None):
+def load_state(path=LEGACY_STATE, today=None):
     try:
         with open(path) as fh:
             s = json.load(fh)
@@ -851,6 +879,7 @@ def render_json(model, conditions, cfg=None):
                     'title': i.get('title') or ''} for i in model['hotfix']],
         'throughput': model.get('throughput') or {},
         'conditions': conditions,
+        'state_path': model.get('state_path'),
     }, indent=2)
 
 
@@ -1100,7 +1129,7 @@ def main(argv=None):
     ap.add_argument('version', nargs='?', default=None,
                     help='version for plan or pin')
     ap.add_argument('--json', action='store_true', help='machine form (what the hook reads)')
-    ap.add_argument('--state', default=DEFAULT_STATE)
+    ap.add_argument('--state', default=None)
     ap.add_argument('--today', default=datetime.date.today().isoformat())
     ap.add_argument('--force', action='store_true',
                     help='overwrite an existing roadmap.toml')
@@ -1129,6 +1158,24 @@ def main(argv=None):
                               'unconfigured': getattr(exc, 'unconfigured', False)}))
         return 0
 
+    # Resolved AFTER the config loads, because it depends on it (github-kkq4a,
+    # I3). An explicit --state still wins -- that is the testing seam and the
+    # escape hatch for a deliberately shared file.
+    state_path = args.state or default_state_path(CONFIG)
+
+    # One-time notice, never an automatic copy. Auto-seeding the new file from
+    # the legacy global one would hand EVERY workspace the same baselines, so
+    # two products would each inherit the other's. `no baseline yet` is an
+    # honest state this design deliberately keeps (refresh_baselines refuses to
+    # invent a plan-at-cut-time); a WRONG baseline is the false-clean signal it
+    # exists to prevent. This prints once in practice: save_state creates the
+    # file before the next run.
+    if not os.path.exists(state_path) and os.path.exists(LEGACY_STATE):
+        sys.stderr.write(
+            'roadmap: state now lives beside roadmap.toml. To keep this '
+            'install\'s scope-creep baselines, copy it once:\n'
+            '    cp %s %s\n' % (LEGACY_STATE, state_path))
+
     try:
         opened, closed = load_issues()
         tag_dates = load_tag_dates()
@@ -1144,7 +1191,7 @@ def main(argv=None):
             print(json.dumps({'unavailable': str(exc)}))
         return 0
 
-    st = load_state(args.state, today=args.today)
+    st = load_state(state_path, today=args.today)
 
     model = build_model(opened, closed, tags)
     model['throughput'] = compute_throughput(
@@ -1161,6 +1208,10 @@ def main(argv=None):
     # 'baseline' above, so the no-on-plan-claim-yet line can name the real
     # date instead of the frozen module literal.
     model['convention_start'] = st['convention_start']
+    # Same pattern as 'baseline' and 'convention_start' above: render_json has
+    # no access to args, and the SessionStart hook needs the resolved path to
+    # stamp the SAME file rather than computing its own (github-kkq4a, I3).
+    model['state_path'] = state_path
 
     if args.target == 'pin':
         v = parse_version(args.version or '')
@@ -1175,11 +1226,11 @@ def main(argv=None):
         entry = model['versions'][v]
         st['baselines'][baseline_key(v)] = sorted(
             i['id'] for i in entry['leaves_open'] + entry['gates'])
-        save_state(args.state, st)
+        save_state(state_path, st)
         print('pinned %s at %d issues' % (_fmt_v(v), len(st['baselines'][baseline_key(v)])))
         return 0
 
-    save_state(args.state, st)
+    save_state(state_path, st)
     conditions = evaluate(model, st, args.today)
 
     if args.json:

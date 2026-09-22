@@ -647,6 +647,56 @@ with tempfile.TemporaryDirectory() as _d:
     check('load_state valid file loads its real last_reported_at (control)',
           _s['last_reported_at'], 12345.0)
 
+# --- I3 (github-kkq4a): one config, one state file ------------------------
+# --state defaulted to ~/.claude/roadmap-cadence-state.json for every
+# workspace, and NOTHING in the file was keyed by workspace. Five fields
+# collided: last_cut, baselines (bare-version keys), convention_start,
+# last_reported_at and unconfigured_reported. The reviewer hit it by accident
+# -- a run from a scratch repo overwrote the live last_cut.
+with tempfile.TemporaryDirectory() as _d:
+    _cfg_path = os.path.join(_d, 'roadmap.toml')
+    with open(_cfg_path, 'w') as _fh:
+        _fh.write('workspace = "."\ntag_repo = "."\n'
+                  'release_namespace = "acme-app"\n')
+    _loaded = rm.load_config(_cfg_path, today='2026-09-21')
+    check('load_config reports where it loaded from',
+          _loaded['config_path'], os.path.realpath(_cfg_path))
+    check('state defaults beside roadmap.toml',
+          rm.default_state_path(_loaded),
+          os.path.join(os.path.realpath(_d), '.roadmap-state.json'))
+
+# Two configs in two directories resolve to two DIFFERENT state paths. This is
+# the whole point: the same assertion with the old global constant would give
+# one path for both.
+with tempfile.TemporaryDirectory() as _d1, tempfile.TemporaryDirectory() as _d2:
+    _paths = []
+    for _d in (_d1, _d2):
+        _p = os.path.join(_d, 'roadmap.toml')
+        with open(_p, 'w') as _fh:
+            _fh.write('workspace = "."\ntag_repo = "."\n'
+                      'release_namespace = "acme-app"\n')
+        _paths.append(rm.default_state_path(rm.load_config(_p, today='2026-09-21')))
+    check('two workspaces get two state files', _paths[0] != _paths[1], True)
+
+# A hand-configured caller (no config_path -- TEST_CFG is exactly this) falls
+# back to the legacy global path instead of raising KeyError.
+check('a cfg with no config_path falls back to the legacy path',
+      rm.default_state_path(TEST_CFG), rm.LEGACY_STATE)
+
+# config_path is NOT a writable TOML key: the unknown-key guard still refuses
+# it, so a user cannot set it by hand and desync the two.
+with tempfile.TemporaryDirectory() as _d:
+    _p = os.path.join(_d, 'roadmap.toml')
+    with open(_p, 'w') as _fh:
+        _fh.write('workspace = "."\ntag_repo = "."\n'
+                  'release_namespace = "acme-app"\nconfig_path = "/tmp/x"\n')
+    try:
+        rm.load_config(_p, today='2026-09-21')
+        check('config_path is rejected as an unknown TOML key', 'no raise', 'raised')
+    except rm.RoadmapUnavailable as _exc:
+        check('config_path is rejected as an unknown TOML key',
+              'config_path' in str(_exc), True)
+
 # --- throughput -----------------------------------------------------------
 def closed_at(day, **kw):
     kw['updated_at'] = day + 'T12:00:00Z'
@@ -1042,6 +1092,15 @@ with tempfile.TemporaryDirectory() as _d:
     _parsed_ok = json.loads(_out)
     check('successful run: no unavailable key (control)',
           'unavailable' in _parsed_ok, False)
+
+# I3 (github-kkq4a): main() reports the resolved state path so the
+# SessionStart hook can stamp the SAME file instead of computing its own.
+with tempfile.TemporaryDirectory() as _d:
+    _sp = os.path.join(_d, 'state.json')
+    _rc, _out, _err = _run_main(['--json', '--state', _sp, '--today', '2026-11-01'],
+                                open_issues=[], closed_issues=[], tag_dates=[])
+    check('--json reports the resolved state path',
+          json.loads(_out).get('state_path'), _sp)
 
 # I8: main()'s --json payload must carry `unconfigured` so the SessionStart
 # hook can speak exactly once for a fresh install (no roadmap.toml at all)
