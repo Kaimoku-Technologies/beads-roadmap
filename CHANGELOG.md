@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Documentation
+
+- **Install without git.** The README's "Using it with other agents" now
+  installs from the release tarball GitHub publishes for each tag (`curl`,
+  `tar`, one symlink), with how to upgrade; cloning is the alternative. The
+  self-test fails if the version in that snippet doesn't match
+  `plugin.json`, so a release can't ship a link to the previous one.
+
 ## [0.4.0] — 2026-09-22
 
 Makes `roadmap` usable from agents other than Claude Code: `roadmap check`

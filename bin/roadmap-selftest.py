@@ -2388,6 +2388,23 @@ _direct = subprocess.run([sys.executable, MODULE_PATH, '--version'],
 check('--version direct and via symlink agree (control)',
       _direct.stdout, _via_link.stdout)
 
+# --- github-8lf8c: the README's tarball install names THIS version ---------
+# The non-Claude install downloads a TAG archive, so the README snippet pins
+# a version, and a release that bumps plugin.json but forgets the README
+# would ship a link to the previous release. This makes CI fail instead.
+import re as _re
+with open(os.path.join(_REPO_ROOT, 'README.md'), encoding='utf-8') as _fh:
+    _README = _fh.read()
+_TARBALL_VERSIONS = (
+    _re.findall(r'archive/refs/tags/v(\d+\.\d+\.\d+)\.tar\.gz', _README)
+    + _re.findall(r'beads-roadmap-(\d+\.\d+\.\d+)', _README))
+# MUST-HIT control: the snippet is there (URL + unpacked dir, at least one
+# each). Without this, deleting the snippet would pass the check below.
+check('README tarball snippet found (URL and directory)',
+      len(_TARBALL_VERSIONS) >= 2, True)
+check('README tarball snippet names the plugin.json version',
+      sorted(set(_TARBALL_VERSIONS)), [_SHIPPED_VERSION])
+
 # --- github-3i67y: `roadmap check`, the drift check as plain text ---------
 # End to end, hermetically: a fresh directory with no roadmap.toml above it
 # and ROADMAP_CONFIG unset is the `unconfigured` state, whose once-ever nudge

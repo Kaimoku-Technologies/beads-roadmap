@@ -282,19 +282,34 @@ session-start check. Here is how to get each of those elsewhere.
 
 ### Install
 
+Download a release and put `roadmap` on your `PATH`; no git needed:
+
 ```
-git clone https://github.com/Kaimoku-Technologies/beads-roadmap.git
-ln -s "$PWD/beads-roadmap/bin/roadmap" ~/.local/bin/roadmap
+curl -fsSL https://github.com/Kaimoku-Technologies/beads-roadmap/archive/refs/tags/v0.4.0.tar.gz | tar xz
+ln -s "$PWD/beads-roadmap-0.4.0/bin/roadmap" ~/.local/bin/roadmap
 roadmap --version
 ```
 
-Any directory on your `PATH` works in place of `~/.local/bin`. `--version`
-should print the path inside your clone. The script runs under the first
-`python3` on your `PATH`, which must be 3.11 or newer; macOS's
-`/usr/bin/python3` is 3.9, and on it `roadmap` prints
-`roadmap: unavailable: needs Python 3.11 or newer` instead of a board. To
-update, `git -C beads-roadmap pull`. Then run `roadmap init` in your
-workspace, as described [above](#first-run-roadmap-init).
+Keep the unpacked `beads-roadmap-0.4.0/` directory where it is: the link
+points into it, and `roadmap check` and `--version` read files beside the
+script. Any directory on your `PATH` works in place of `~/.local/bin`.
+`--version` should print a path inside that directory.
+
+The script runs under the first `python3` on your `PATH`, which must be
+3.11 or newer. macOS's `/usr/bin/python3` is 3.9, and on it `roadmap` prints
+`roadmap: unavailable: needs Python 3.11 or newer` instead of a board.
+
+**To upgrade,** download the newer release the same way and move the link
+to it with `ln -sfn`; then delete the old directory. Your board's state
+lives beside `roadmap.toml`, not in the install, so nothing is lost. The
+[CHANGELOG](CHANGELOG.md) lists what each release changed.
+
+**Prefer git?** `git clone https://github.com/Kaimoku-Technologies/beads-roadmap.git`
+and link `beads-roadmap/bin/roadmap` instead; `git pull` then upgrades to
+whatever is on `main`, which may be ahead of the latest release.
+
+Then run `roadmap init` in your workspace, as described
+[above](#first-run-roadmap-init).
 
 ### Tell your agent about it
 
