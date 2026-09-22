@@ -786,30 +786,39 @@ check('the cfg fallback still honours warm-up',
       rm.compute_throughput([], TP_CLOSED, [], '2026-10-03', None)['on_plan_share_14d'],
       None)
 
-# Arm 2: no cfg AND no module CONFIG -> today(). TP_CLOSED cannot be reused
-# here: with CONFIG cleared, is_human_authored(i) (called with no cfg of its
-# own -- it reads the module CONFIG directly, uncoordinated with the local
-# `cfg` this function resolves) crashes on TypeError the moment it meets a
-# LABELLED closed issue. convention_start's own fallback line runs fine
-# first, but the function never reaches the on_plan_share_14d computation
-# that would let us observe it. Observed by running this arm against
-# TP_CLOSED first. An unlabeled fixture sidesteps that unrelated crash --
-# labels_of() is empty, so the `cfg['auto_label_prefixes']` lookup never
-# executes -- without masking the thing this arm actually tests. Using the
-# REAL current date as both the fixture's close day and the `today` argument
-# keeps the result deterministic rather than a ticking time-bomb:
-# convention_start falls back to datetime.date.today() too, so the gap is
-# always exactly 0 days, inside warm-up on any day this suite runs.
+# Arm 2: no cfg AND no module CONFIG -> datetime.date.today(). TP_CLOSED
+# cannot be reused here: with CONFIG cleared, is_human_authored(i) (called
+# with no cfg of its own -- it reads the module CONFIG directly,
+# uncoordinated with the local `cfg` this function resolves) crashes on
+# TypeError the moment it meets a LABELLED closed issue (filed as
+# github-086tz; bin/roadmap is untouched by this task). convention_start's
+# own fallback line runs fine first, but the function never reaches the
+# on_plan_share_14d computation that would let us observe it. An unlabeled
+# fixture sidesteps that unrelated crash -- labels_of() is empty, so the
+# `cfg['auto_label_prefixes']` lookup never executes -- without masking the
+# thing this arm actually tests.
+#
+# Asserting None here would NOT pin the fallback: if the fallback were gone,
+# convention_start stays None, warmup_active's
+# datetime.date.fromisoformat(None) raises, and its own
+# `except Exception: return True` fail-open clause yields None too. Two
+# causes, one observable. So drive `today` 60 days past the REAL clock --
+# the fallback seeds from datetime.date.today(), not from the `today`
+# parameter -- and assert a real float instead. A working fallback puts
+# warm-up 60 days behind us; a broken one still returns None. (This
+# deliberately pins current behaviour: if the fallback ever reads the
+# `today` parameter instead of the clock, revisit this arm.)
+_FB2_TODAY = (datetime.date.today() + datetime.timedelta(days=60)).isoformat()
+_FB2_ROW = [closed_at((datetime.date.today() + datetime.timedelta(days=55)).isoformat(), id='fb2')]
 _saved_cfg = rm.CONFIG
 rm.configure(None)
-_FB2_TODAY = datetime.date.today().isoformat()
-_FB2_CLOSED = [closed_at(_FB2_TODAY, id='fb1')]
 try:
-    check('no cfg and no CONFIG falls back to today (warm-up active)',
-          rm.compute_throughput([], _FB2_CLOSED, [], _FB2_TODAY, None,
-                                cfg=None)['on_plan_share_14d'], None)
+    _fb2 = rm.compute_throughput([], _FB2_ROW, [], _FB2_TODAY, None, cfg=None)
 finally:
     rm.configure(_saved_cfg)
+check('no cfg and no CONFIG falls back to today(), not the fail-open path',
+      isinstance(_fb2['on_plan_share_14d'], float), True)
+check('the unlabelled row gives a 0.0 share', _fb2['on_plan_share_14d'], 0.0)
 check('CONFIG restored after the fallback arm (control)',
       rm.CONFIG['release_namespace'], 'acme-app')
 
