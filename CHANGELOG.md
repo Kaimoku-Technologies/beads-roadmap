@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The self-test no longer passes without running.** On Python older than
+  3.11 it printed `roadmap`'s own "unavailable" line and exited 0 with no
+  checks run, because loading the tool triggered the tool's deliberate
+  fail-open exit. It now exits 1 with `FAIL: roadmap-selftest did not run`,
+  and any exit while loading the tool is treated as a failure. The
+  `roadmap` command itself still fails open, as before.
+
 ### Documentation
 
 - **The README now explains day-to-day use:** every command, how to read

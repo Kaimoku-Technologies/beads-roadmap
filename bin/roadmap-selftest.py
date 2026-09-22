@@ -22,12 +22,44 @@ import tempfile
 
 MODULE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'roadmap')
 
-spec = importlib.util.spec_from_loader(
-    'roadmap_under_test',
-    importlib.machinery.SourceFileLoader('roadmap_under_test', MODULE_PATH),
-)
-rm = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(rm)
+
+# github-b6y2m: this suite must never exit 0 without having run. bin/roadmap
+# FAILS OPEN at import on an old interpreter -- `sys.exit(0)`, deliberately,
+# so a broken install can never break a session -- and loading it in-process
+# used to hand that exit 0 straight to the suite: zero checks run, a green
+# exit code. The tool's contract stays; the suite refuses to inherit it.
+# Keep everything above the load 3.9-parseable, or this never gets to run.
+def _suite_interpreter_error(version_info, executable):
+    if tuple(version_info[:3]) < (3, 11, 0):
+        return ('FAIL: roadmap-selftest did not run -- it needs Python 3.11 '
+                'or newer; this interpreter is %d.%d.%d at %s'
+                % (version_info[0], version_info[1], version_info[2], executable))
+    return None
+
+
+def _load_module(name, path):
+    """exec a module by path; a SystemExit at its top level is a FAILURE to
+    load, never a result -- whatever code it carried."""
+    spec = importlib.util.spec_from_loader(
+        name, importlib.machinery.SourceFileLoader(name, path))
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except SystemExit as exc:
+        raise RuntimeError('%s exited with code %r at import, so nothing was '
+                           'tested' % (path, exc.code))
+    return module
+
+
+_INTERPRETER_ERROR = _suite_interpreter_error(sys.version_info, sys.executable)
+if _INTERPRETER_ERROR:
+    print(_INTERPRETER_ERROR)
+    sys.exit(1)
+try:
+    rm = _load_module('roadmap_under_test', MODULE_PATH)
+except RuntimeError as _load_exc:
+    print('FAIL: roadmap-selftest did not run -- %s' % _load_exc)
+    sys.exit(1)
 
 # The suite's namespace is deliberately FOREIGN to every default and to the
 # reference deployment, so a surviving hardcoded namespace FAILS here rather
@@ -91,12 +123,49 @@ check('exactly the floor version is accepted (control)',
 check('a newer interpreter is accepted (control)',
       rm._check_python_version(version_info=(3, 13, 2), executable='/usr/bin/python3'),
       None)
-# MUST-MISS: the REAL running interpreter (this suite is only runnable on
-# 3.11+ at all, since it imports the module under test) must pass with no
+# MUST-MISS: the REAL running interpreter (this suite refuses to run below
+# 3.11 -- see _suite_interpreter_error at the top) must pass with no
 # override -- proves the default path (real sys.version_info) also works,
 # not just the injected one.
 check('the real running interpreter passes with no override',
       rm._check_python_version(), None)
+
+# --- github-b6y2m: the suite never inherits the tool's fail-open exit 0 ----
+# On 3.9 this suite used to print the tool's `unavailable` line and exit 0
+# with zero checks run. CI (3.11+) can never reach that path, so both guards
+# are tested by injection, like _check_python_version above.
+# MUST-HIT: below the floor the suite reports a FAILURE, not an unavailable.
+_suite_old = _suite_interpreter_error((3, 9, 6), '/usr/bin/python3')
+check('suite: an old interpreter is a failure message',
+      (_suite_old or '').startswith('FAIL:'), True)
+check('suite: the message names the running version', '3.9.6' in (_suite_old or ''), True)
+# MUST-MISS: exactly the floor runs the suite.
+check('suite: exactly the floor is accepted (control)',
+      _suite_interpreter_error((3, 11, 0), '/usr/bin/python3'), None)
+
+# MUST-HIT: a module that sys.exit(0)s at import -- the shape of bin/roadmap's
+# own fail-open guard -- is a load FAILURE, never a module.
+_exit_dir = tempfile.mkdtemp()
+_exit_mod = os.path.join(_exit_dir, 'exits_at_import')
+with open(_exit_mod, 'w', encoding='utf-8') as _fh:
+    _fh.write('import sys\nsys.exit(0)\n')
+# SystemExit is caught HERE too: if the guard in _load_module regressed, the
+# fixture's exit would otherwise end this suite mid-run with code 0 -- the
+# very false green this block exists to prevent.
+try:
+    _load_module('exits_at_import', _exit_mod)
+    check('suite: an exit-0 at import is refused', 'loaded', 'refused')
+except SystemExit:
+    check('suite: an exit-0 at import is refused', 'SystemExit escaped', 'refused')
+except RuntimeError as _exc:
+    check('suite: an exit-0 at import is refused', 'code 0' in str(_exc), True)
+# MUST-MISS control: an ordinary module loads and is usable, so the refusal
+# above is about the exit, not the loader failing on everything.
+_ok_mod = os.path.join(_exit_dir, 'loads_fine')
+with open(_ok_mod, 'w', encoding='utf-8') as _fh:
+    _fh.write('VALUE = 42\n')
+check('suite: an ordinary module still loads (control)',
+      _load_module('loads_fine', _ok_mod).VALUE, 42)
 
 
 # --- version parsing ------------------------------------------------------
