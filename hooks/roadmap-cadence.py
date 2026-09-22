@@ -12,7 +12,10 @@ FIVE PROPERTIES, each of which is a way this could fail
    torn out, leaving neither the hook nor the roadmap. The two ONCE-EVER
    messages are the stated exceptions: the `roadmap init` nudge for an
    install with no roadmap.toml, and the 0.1.x -> 0.2.0 state-move notice.
-   Each is keyed on its own marker in the state file and never repeats.
+   Each is keyed on its OWN marker in the state file, so once the marker is
+   recorded it does not speak again. (If the marker cannot be written -- an
+   unwritable directory -- the message repeats rather than being lost, which
+   is the safe direction for something the user has to act on.)
 2. THROTTLED (default 3 days -- shorter than the other two hooks' 7, because
    planning drift moves faster than a Dolt commit count), EXCEPT conditions
    flagged `bypass`, which repeat every session because they are states that

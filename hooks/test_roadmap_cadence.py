@@ -136,7 +136,10 @@ check('ordinary unavailable reason: stays silent (control)', out3.strip() == '')
 # was silent, and nobody on the default install path ever saw it. The hook now
 # re-emits it through additionalContext, once, on a dedicated marker.
 LEGACY_PATH = os.path.expanduser('~/.claude/roadmap-cadence-state.json')
-_MOVED_STATE = '/tmp/some-workspace/.roadmap-state.json'
+# Named in the payload and quoted back in the message; nothing ever writes it
+# (the hook stamps `state`, which run_hook forces), so it only has to be a
+# path the hook could not have invented on its own.
+_MOVED_STATE = os.path.join(tempfile.mkdtemp(), '.roadmap-state.json')
 LEGACY_CLEAN = json.dumps({'state_path': _MOVED_STATE,
                            'legacy_state_available': True,
                            'conditions': []})

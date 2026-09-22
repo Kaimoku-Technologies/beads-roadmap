@@ -463,7 +463,7 @@ def default_state_path(cfg=None):
     return os.path.join(os.path.dirname(path), '.roadmap-state.json')
 
 
-def legacy_notice(state_path, legacy=None):
+def legacy_notice(state_path):
     """-> the one-time 0.1.x -> 0.2.0 state-move notice, newline-terminated.
 
     A named function rather than an inline write so the suite can assert on
@@ -481,7 +481,7 @@ def legacy_notice(state_path, legacy=None):
     brand-new workspaces that never had baselines at all, where the right
     action is to ignore it.
     """
-    legacy = LEGACY_STATE if legacy is None else legacy
+    legacy = LEGACY_STATE
     return ('roadmap: state now lives beside roadmap.toml, at\n'
             '    %s\n'
             'A state file from before 0.2.0 is still at\n'
@@ -1276,7 +1276,7 @@ def main(argv=None):
     # already elapsed: that is the user's own stated convention age, not a
     # date recovered from a file we just failed to read.
     st = load_state(state_path,
-                    today=(CONFIG.get('convention_start') or args.today))
+                    today=((CONFIG or {}).get('convention_start') or args.today))
 
     model = build_model(opened, closed, tags)
     model['throughput'] = compute_throughput(
