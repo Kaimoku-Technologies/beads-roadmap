@@ -335,9 +335,18 @@ def load_issues(bd_bin='bd', timeout=60, cfg=None):
     discovery is by full dump because every label-QUERY surface is broken --
     `bd label list-all` truncates to 78 rows and `--label-pattern` returns all
     7,105 rows for any input. Measured cost 0.4 s open / 0.9 s closed.
+
+    The open read is the whole not-done FAMILY (github-aci1y). bd's --status
+    is an EXACT match, so --status=open alone dropped in_progress, blocked
+    and deferred rows from every bucket -- a versioned leaf moved to
+    in_progress left its version's open count as though it were done. The
+    comma form is the only correct multi-status syntax: a REPEATED --status
+    silently overwrites the earlier one. Deferred rows are read here, as
+    not-done work, and excluded per view by is_deferred() -- see there.
     """
     cfg = cfg or CONFIG
-    opened = _bd(bd_bin, ['list', '--status=open', '-n', '0', '--json'], timeout, cfg)
+    opened = _bd(bd_bin, ['list', '--status=open,in_progress,blocked,deferred',
+                          '-n', '0', '--json'], timeout, cfg)
     closed = _bd(bd_bin, ['list', '--status=closed', '-n', '0', '--json'], timeout, cfg)
     return opened, closed
 
@@ -370,6 +379,21 @@ def is_hotfix(issue):
     if issue.get('issue_type') == 'bug' and p <= 1:
         return True
     return is_security_marked(issue) and p <= 2
+
+
+def is_deferred(issue):
+    """Deferred is not-done work that someone has explicitly said is NOT NOW
+    (github-aci1y, decided 2026-09-22). So it splits by view:
+
+    - A version's leaves_open COUNTS it. A deferred leaf still blocks that
+      release's cut until it is slipped; leaving it out would make the
+      version look closer to done, the exact silent shrink this fixes.
+    - The hotfix queue, unscheduled list and plan candidates EXCLUDE it.
+      Each of those is a "take this on now" surface, and the deferral is a
+      deliberate answer of "not now". Measured the day this was decided: a
+      deferred P1 bug would otherwise have entered the hotfix queue.
+    """
+    return issue.get('status') == 'deferred'
 
 
 def build_model(open_issues, closed_issues, tags):
@@ -424,11 +448,13 @@ def build_model(open_issues, closed_issues, tags):
         (i for i in open_issues
          if i.get('issue_type') in ('feature', 'epic')
          and not release_versions(i)
-         and is_human_authored(i)),
+         and is_human_authored(i)
+         and not is_deferred(i)),
         key=_rank)
 
     hotfix = sorted(
-        (i for i in open_issues if is_hotfix(i) and not release_versions(i)),
+        (i for i in open_issues
+         if is_hotfix(i) and not release_versions(i) and not is_deferred(i)),
         key=_rank)
 
     return {'cut': cut, 'no_tags': no_tags, 'in_flight': in_flight, 'planned': planned,
@@ -586,10 +612,13 @@ def _candidates(open_issues, model, version):
     epics = [g['id'] for g in entry['gates']]
     if not epics:
         return []
+    # byid keeps deferred rows: ancestry must walk THROUGH a deferred parent,
+    # or its open children lose their path to the gating epic.
     byid = {i['id']: i for i in open_issues}
     out = [i for i in open_issues
            if is_human_authored(i)
            and not release_versions(i)
+           and not is_deferred(i)
            and any(descends_from(i, e, byid) for e in epics)]
     return sorted(out, key=_rank)
 

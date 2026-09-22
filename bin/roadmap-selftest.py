@@ -1502,6 +1502,73 @@ check('proposal caps at 7', len(rm.propose(MANY, MANY_M, (0, 18, 0))), 7)
 check('proposal reports the true total',
       rm.propose_total(MANY, MANY_M, (0, 18, 0)), 11)
 
+# --- github-aci1y: the open FAMILY is read, and deferred is split by view --
+# load_issues read --status=open and --status=closed only, and bd's filter is
+# EXACT, so in_progress/blocked/deferred rows reached no bucket -- a versioned
+# leaf moved to in_progress left its version's open count as if done. The fake
+# bd below mirrors bd 1.2.2's two argv semantics, so the test fails on BOTH
+# wrong shapes: `--status` matches exactly, and a REPEATED --status silently
+# overwrites the earlier one (last wins) -- the trap a naive fix walks into.
+_FAMILY_ROWS = [
+    tagged('v0.16.0', id='op-leaf'),
+    tagged('v0.16.0', id='ip-leaf', status='in_progress'),
+    tagged('v0.16.0', id='bl-leaf', status='blocked'),
+    tagged('v0.16.0', id='df-leaf', status='deferred'),
+    tagged('v0.16.0', id='cl-leaf', status='closed'),
+    issue(id='op-bug', issue_type='bug', priority=1),
+    issue(id='df-bug', issue_type='bug', priority=1, status='deferred'),
+    issue(id='op-feat', issue_type='feature', priority=2),
+    issue(id='df-feat', issue_type='feature', priority=2, status='deferred'),
+    tagged('v0.18.0', id='g-ep', issue_type='epic', priority=2),
+    issue(id='g-ep.1', priority=2, status='deferred'),
+    issue(id='mid', priority=2, parent='g-ep', status='deferred'),
+    issue(id='under-mid', priority=2, parent='mid'),
+]
+_fam_dir = tempfile.mkdtemp()
+_fake_bd = os.path.join(_fam_dir, 'bd')
+with open(_fake_bd, 'w', encoding='utf-8') as _fh:
+    _fh.write('#!%s\nimport json, sys\nROWS = json.loads(%r)\nwant = None\n'
+              'for a in sys.argv[1:]:\n'
+              '    if a.startswith("--status="):\n'
+              '        want = a.split("=", 1)[1].split(",")\n'
+              'print(json.dumps([r for r in ROWS if want is None or r["status"] in want]))\n'
+              % (sys.executable, json.dumps(_FAMILY_ROWS)))
+os.chmod(_fake_bd, 0o755)
+_fam_open, _fam_closed = rm.load_issues(bd_bin=_fake_bd, cfg={'workspace': _fam_dir})
+_FM = rm.build_model(_fam_open, _fam_closed, [(0, 15, 0)])
+_fam_v16 = [i['id'] for i in _FM['versions'][(0, 16, 0)]['leaves_open']]
+
+# MUST-HIT: the in_progress leaf counts as NOT DONE in its version.
+check('an in_progress leaf is in its version\'s open count', 'ip-leaf' in _fam_v16, True)
+check('a blocked leaf is in its version\'s open count', 'bl-leaf' in _fam_v16, True)
+# Deferred, view 1: a deferred VERSIONED leaf is still undone work in that
+# release -- it blocks the cut until it is slipped, so it counts as open.
+check('a deferred leaf is in its version\'s open count', 'df-leaf' in _fam_v16, True)
+check('the open leaf is still counted (control)', 'op-leaf' in _fam_v16, True)
+# Control, opposite direction: closed rows land in leaves_closed and never in
+# the open read, so widening the open family did not swallow the closed one.
+check('closed rows still count as closed', _FM['versions'][(0, 16, 0)]['leaves_closed'], 1)
+check('no closed row is read as open',
+      [i['id'] for i in _fam_open if i['status'] == 'closed'], [])
+
+# Deferred, view 2: the hotfix queue means "cut this now", which a deferral
+# explicitly says not to do. The open P1 bug beside it proves the arm fires.
+_fam_hot = [i['id'] for i in _FM['hotfix']]
+check('a deferred P1 bug is not in the hotfix queue', 'df-bug' in _fam_hot, False)
+check('an open P1 bug is in the hotfix queue (control)', 'op-bug' in _fam_hot, True)
+_fam_uns = [i['id'] for i in _FM['unscheduled']]
+check('a deferred feature is not unscheduled work', 'df-feat' in _fam_uns, False)
+check('an open feature is unscheduled work (control)', 'op-feat' in _fam_uns, True)
+
+# Deferred, view 3: plan candidates exclude deferred rows -- but ancestry must
+# still walk THROUGH one, or an open child of a deferred sub-epic would lose
+# its path to the gating epic and silently drop out of the plan.
+_fam_cand = [i['id'] for i in rm.propose(_fam_open, _FM, (0, 18, 0))]
+check('a deferred descendant is not a plan candidate', 'g-ep.1' in _fam_cand, False)
+check('a deferred intermediate is not a plan candidate', 'mid' in _fam_cand, False)
+check('an open child under a deferred parent is still a candidate',
+      'under-mid' in _fam_cand, True)
+
 # --- condition 6: a tag was cut since the last run ------------------------
 C6 = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b')],
                     [], [(0, 15, 0)])

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **In-progress, blocked and deferred issues are no longer invisible.**
+  `roadmap` read only `--status=open` and `--status=closed`, and bd's status
+  filter is an exact match, so an issue moved to `in_progress` dropped out of
+  its release's open count as though it were done. It now reads
+  `open,in_progress,blocked,deferred`. **Deferred is split by view:** a
+  deferred issue in a release still counts as unfinished work in that
+  release, but it is left out of the hotfix queue, the unscheduled list and
+  `roadmap plan` candidates, because deferring it means "not now". Expect
+  `unscheduled_count` to rise by any blocked or in-progress features and
+  epics.
+
 - **`compute_throughput(cfg=...)` now governs the human-authored filter too.**
   It resolved its cfg but called `is_human_authored` without it, so the module
   config (not the one passed in) decided which closed issues counted as
