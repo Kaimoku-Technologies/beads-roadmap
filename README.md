@@ -64,6 +64,12 @@ board — without an error telling you why:
 no TOML dependency to install. Nothing else here reaches outside the standard
 library either.
 
+If you use [mise](https://mise.jdx.dev/), `.mise.toml` pins the exact patch
+this project develops against. It deliberately names the **oldest** supported
+version rather than the newest that works, so a 3.12-or-later-only construct
+cannot slip in unnoticed; CI then runs the suites on 3.11, 3.12 and 3.13 to
+prove the newer ones still pass.
+
 ## `github-*` ids in code comments
 
 Several comments and docstrings in this codebase cite ids like `github-4jmwr`

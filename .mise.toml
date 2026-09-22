@@ -1,0 +1,17 @@
+# Pinned to the OLDEST Python this project supports, not the newest that works.
+#
+# The floor is 3.11 because the config loader imports stdlib `tomllib`, which
+# does not exist before it. That is measured, not assumed: running
+# `bin/roadmap-selftest.py` under 3.9 dies with
+#     ModuleNotFoundError: No module named 'tomllib'
+#
+# Developing against the floor is the point. If you work on 3.13 and the pin
+# said 3.13, a 3.12-or-later-only construct could enter without anything
+# noticing until a contributor on 3.11 hit it. This way the oldest supported
+# version is the one you actually run, and CI's matrix
+# (.github/workflows/test.yml) proves 3.12 and 3.13 still pass.
+#
+# Exact patch on purpose — never "3.11" or "3". An ambiguous pin reintroduces
+# exactly the drift this file exists to remove.
+[tools]
+python = "3.11.16"
