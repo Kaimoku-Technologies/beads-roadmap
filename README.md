@@ -293,7 +293,9 @@ roadmap --version
 Keep the unpacked `beads-roadmap-0.4.0/` directory where it is: the link
 points into it, and `roadmap check` and `--version` read files beside the
 script. Any directory on your `PATH` works in place of `~/.local/bin`.
-`--version` should print a path inside that directory.
+`--version` should print a path inside that directory. Install 0.4.0 or
+later this way: earlier releases don't follow the symlink, so `--version`
+reports `version unknown` and `roadmap check` doesn't exist.
 
 The script runs under the first `python3` on your `PATH`, which must be
 3.11 or newer. macOS's `/usr/bin/python3` is 3.9, and on it `roadmap` prints
