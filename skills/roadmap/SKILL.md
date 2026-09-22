@@ -23,9 +23,19 @@ writes to bd, so there is no state to migrate and no tag to keep in sync.
 
 ## Reading the output
 
-**An EMPTY `plan` proposal is a RESULT, not a blank.** It means no unversioned
-work is left under that version's gating epics — the version looks ready to
-cut. Report that verdict; do not treat it as an error.
+**An EMPTY `plan` proposal is a RESULT, not a blank — but there are TWO such
+results and they are different claims.** Read which one it printed.
+
+- **Gating epics exist and nothing unversioned descends from them** → the
+  version looks ready to cut. Report that verdict; do not treat it as an
+  error.
+- **No gating epic at all** → the tool says so and explicitly disclaims a
+  readiness verdict. It has nothing to check descent against, so unversioned
+  work may still belong in that version. This is the default state for a board
+  whose epic hierarchy has not formed yet.
+
+Never report the second as the first. The tool distinguishes them precisely so
+the answer is not invented.
 
 **`roadmap: unavailable: …` on stderr is not an empty board.** The tool fails
 open so it can never break a session, but it says why. With `--json` the

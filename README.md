@@ -89,7 +89,7 @@ tracker; don't follow them expecting a link to work.
 ## Design
 
 See [`docs/DESIGN.md`](docs/DESIGN.md) for the short public design: what
-"derived, not stored" means concretely, the six drift conditions the
+"derived, not stored" means concretely, the seven drift conditions the
 SessionStart hook can report, and the fail-open contract that keeps a broken
 or unconfigured install from ever breaking a session.
 

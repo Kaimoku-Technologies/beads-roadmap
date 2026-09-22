@@ -16,9 +16,14 @@ Run the roadmap board and report it.
   proposes what should go in a version, drawn from the unversioned work
   descending from that version's gating epics, ranked, capped at 7 with the
   true total shown. Emits a paste-ready `bd label add` block. An EMPTY
-  proposal is a result, not a blank: it means no unversioned work is left
-  under those epics, so the version looks ready to cut. Report that verdict,
-  don't treat it as an error.
+  proposal is a result, not a blank — but **read which result it printed**,
+  because there are two and they are different claims. With gating epics
+  present, "nothing descends from them" means the version looks ready to cut;
+  report that verdict. With NO gating epic, the tool says so explicitly and
+  disclaims a readiness verdict — it cannot check descent against anything,
+  which is the default state for a board whose epic hierarchy has not formed
+  yet. Relay whichever one it printed; never upgrade the second into the
+  first.
 - A version like `v1.2.0` → `${CLAUDE_PLUGIN_ROOT}/bin/roadmap v1.2.0`
 - `pin <version>` → `${CLAUDE_PLUGIN_ROOT}/bin/roadmap pin <version>`, which
   re-baselines that version's scope-creep snapshot. Only run this when the
