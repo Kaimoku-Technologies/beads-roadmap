@@ -165,11 +165,21 @@ check('state move: names the re-baseline escape hatch', 'roadmap pin' in out)
 
 # The marker is DEDICATED: reusing last_reported_at would let this message
 # suppress a real throttled condition for the rest of the window.
-_lg_after = json.load(open(_lg_state))
+#
+# GUARDED, and the guard is repeated inside the must-miss below. run_hook was
+# handed a path that does not exist yet, so a hook that never speaks never
+# creates it, and an unguarded read here would raise and truncate every later
+# arm instead of failing this one (the failure mode measured on this very
+# assertion during its own falsification drill). `{}` is the fallback, so the
+# `not ...` check has to re-test existence: an empty container satisfies every
+# negative, which is the vacuous must-miss this suite already fixed once.
+_lg_exists = os.path.exists(_lg_state)
+_lg_after = json.load(open(_lg_state)) if _lg_exists else {}
+check('state move: wrote the state file at all', _lg_exists)
 check('state move: records its own marker key',
       _lg_after.get('legacy_state_reported') is True)
 check('state move: does not consume the throttle stamp',
-      not _lg_after.get('last_reported_at'))
+      _lg_exists and not _lg_after.get('last_reported_at'))
 
 # MUST-MISS: the SAME state file, second run -- it speaks ONCE even though the
 # binary still reports the flag (the legacy file is still there; the user may

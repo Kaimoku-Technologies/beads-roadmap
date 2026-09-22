@@ -1172,9 +1172,13 @@ with tempfile.TemporaryDirectory() as _d:
     _rc, _out, _err = _run_main(['--json', '--state', _cs_state,
                                  '--today', '2026-11-01'],
                                 open_issues=[], closed_issues=[], tag_dates=[])
+    # Guarded: a mutation that stops the state file being written at all
+    # would otherwise raise here and truncate every later arm instead of
+    # failing this one. The fallback is {}, whose .get() is None -- which
+    # equals none of the three dates asserted, so no arm passes vacuously.
+    _cs = json.load(open(_cs_state)) if os.path.exists(_cs_state) else {}
     check('a configured convention_start seeds an absent state file',
-          json.load(open(_cs_state))['convention_start'],
-          TEST_CFG['convention_start'])
+          _cs.get('convention_start'), TEST_CFG['convention_start'])
 
 # MUST-MISS control: a config carrying NO convention_start at all still seeds
 # today, so the fix reads the key rather than hardcoding a second source of
@@ -1188,8 +1192,9 @@ with tempfile.TemporaryDirectory() as _d:
                                  '--today', '2026-11-01'],
                                 open_issues=[], closed_issues=[], tag_dates=[],
                                 cfg=_no_cs)
+    _cs = json.load(open(_cs_state)) if os.path.exists(_cs_state) else {}
     check('an absent configured convention_start still seeds today (control)',
-          json.load(open(_cs_state))['convention_start'], '2026-11-01')
+          _cs.get('convention_start'), '2026-11-01')
 
 # MUST-MISS control: an EXISTING state file keeps its own convention_start --
 # the config seeds an absent file, it does not overwrite a recorded warm-up
@@ -1201,8 +1206,9 @@ with tempfile.TemporaryDirectory() as _d:
     _rc, _out, _err = _run_main(['--json', '--state', _cs_state,
                                  '--today', '2026-11-01'],
                                 open_issues=[], closed_issues=[], tag_dates=[])
+    _cs = json.load(open(_cs_state)) if os.path.exists(_cs_state) else {}
     check('an existing convention_start survives a configured one (control)',
-          json.load(open(_cs_state))['convention_start'], '2026-05-05')
+          _cs.get('convention_start'), '2026-05-05')
 
 # --- C1 / I5 (github-kkq4a): the 0.1.x -> 0.2.0 state-move notice ---------
 # There is deliberately no automatic migration -- seeding the new per-install
