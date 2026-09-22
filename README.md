@@ -110,6 +110,154 @@ name appears only as a last-resort suggestion in that refusal, never as a
 value it writes on its own.) In that case, copy `roadmap.example.toml` and
 fill in the three keys by hand.
 
+## Using it
+
+Inside a Claude Code session, use the `/roadmap` slash command, or just ask
+("what should we ship next?", "is this a hotfix?") and the bundled skill runs
+it for you. In a shell, the same commands are `roadmap …` (by full path
+outside a session; see above).
+
+| Command | What it shows |
+| --- | --- |
+| `/roadmap` | The whole board (see below) |
+| `/roadmap v1.2.0` | One version in detail: every open issue, gating epics, counts |
+| `/roadmap hotfix` | The full hotfix queue (the board shows the top three) |
+| `/roadmap unscheduled` | Every feature and epic with no version (the board shows the top three) |
+| `/roadmap plan` | Proposes what to put in the next planned version |
+| `/roadmap plan v1.2.0` | The same for a specific version |
+| `/roadmap pin v1.2.0` | Re-baselines that version's scope-creep snapshot |
+| `/roadmap init` | Writes `roadmap.toml` (once per workspace, see above) |
+
+Every command rebuilds everything from a fresh `bd` read, so there is nothing
+to refresh or sync: run it whenever you want the current picture.
+
+### Reading the board
+
+An illustrative board (the issues are invented; the layout is real):
+
+```
+ROADMAP · acme-app · cut v1.1.0
+
+  IN FLIGHT
+     v1.2.0       3 open · 5 done
+        P1 bug      Login fails when the session cookie is expired
+        P2 feature  Export reports as CSV
+        P3 task     Rename the settings page
+        gates: acme-5      Reporting overhaul
+
+  HOTFIX QUEUE v1.2.1 (implied)   1 unversioned · cuttable independently
+    P1 bug       acme-42 Password reset link never arrives
+
+  PLANNED
+     v1.3.0       4 open · 0 done
+        P2 feature  Single sign-on
+        P2 feature  Dark mode
+        …2 more · /roadmap v1.3.0
+
+  UNSCHEDULED  6 features/epics carry no version
+    P1 feature   acme-51 Audit log
+    P2 feature   acme-60 Slack notifications
+    P2 epic      acme-61 Mobile app
+     …3 more · /roadmap unscheduled
+
+  THROUGHPUT    7d    14 closed ·   9 in a release set ·  1 tags cut
+               28d    52 closed ·  37 in a release set ·  2 tags cut
+     v1.2.0        8  7  6  5  4  3   open, last 6 days
+     creep:   none since baseline (8 issues)
+```
+
+- **The header** names the release namespace and the newest `v*` tag (`cut`).
+- **IN FLIGHT** is the lowest version above that tag: the release you are
+  working toward now. `open · done` counts only leaf issues. Epics listed as
+  `gates:` never add to the count; their children count only if they carry
+  the release label themselves. In-progress, blocked and deferred issues all
+  count as open: a deferred issue still holds up its release until you move
+  it to a later one.
+- **HOTFIX QUEUE** is priority-0/1 bugs, plus security-marked issues at
+  priority 0–2, that carry **no** release label. The patch version shown
+  (the in-flight version's next patch) is implied, not planned: cut it
+  whenever one fix is ready, without waiting for the in-flight version.
+- **PLANNED** is every later minor or major version that has at least one
+  labelled issue. Only its features are listed; the rest are counted in
+  `…N more`. Run `/roadmap <version>` to see all of them.
+- **UNSCHEDULED** is features and epics with no release label. Tasks with no
+  version are not roadmap lines and are left out.
+- **THROUGHPUT** looks backward, never forward. It shows how many issues
+  closed, how many of those were in a release, and how many tags were cut
+  over the last 7 and 28 days. It also shows the in-flight version's open
+  count for each of the last six days. `creep` compares the in-flight
+  version's current issues with the baseline taken when it went in flight.
+- **Drift conditions**, when any apply, print last. Each names the problem
+  and the command that fixes it. See [`docs/DESIGN.md`](docs/DESIGN.md) for
+  all eight.
+
+Issues auto-filed by tooling (labels matching `auto_label_prefixes` in
+`roadmap.toml`) are left out of the hotfix queue, the unscheduled list,
+`plan` proposals and throughput. If one carries a release label, it still
+counts toward that version. Deferred issues are left out of
+the hotfix queue, the unscheduled list and `plan` proposals, since deferring
+means "not now".
+
+### Common tasks
+
+**Put an issue in a version.** Add its release label in `bd`. The label goes
+**last**:
+
+```
+bd label add acme-42 release:acme-app-v1.2.0
+```
+
+With the label first, `bd label add` prints an error and still **exits 0**,
+so a script reads it as success while nothing was applied. Run `roadmap`
+again to see the issue land.
+
+**Plan the next version.** `/roadmap plan` picks the first planned version
+(or the in-flight one if nothing is planned yet); `plan v1.3.0` names one.
+It looks at the epics gating that version and proposes the unversioned work
+beneath them, ranked by priority and then by type (feature, bug, task), up to seven items
+with the true total shown. It ends with a ready-to-paste `bd label add` block.
+Nothing is applied until you run it. An empty proposal is one of two
+different results, so read which one it printed:
+
+- **Gating epics exist, but nothing unversioned sits beneath them:** the
+  version looks ready to cut.
+- **The version has no gating epic:** the tool says it cannot judge
+  readiness, because it has nothing to check against. Unversioned work may
+  still belong in the version.
+
+**Ship a version.** Cut the `v*` tag in `tag_repo` as you normally would.
+The next run notices the new tag, moves the next version into flight and
+snapshots its scope as the new creep baseline. You don't need to run
+anything extra.
+
+**Accept scope growth.** When the in-flight version has grown and you've
+decided that's fine, `/roadmap pin v1.2.0` makes its current issues the new
+baseline. This throws away the record of what was added, so only do it on
+purpose; if the growth wasn't agreed, move issues out instead.
+
+**Script against it.** `roadmap --json` prints the same model as JSON; the
+SessionStart hook reads this form. If `roadmap` can't read the board (no
+config, `bd` missing, Python too old), it prints `roadmap: unavailable: …` on
+stderr, puts the reason under an `unavailable` key in JSON, and **still exits
+0** so it can never break a session. Check for that key rather than trusting
+the exit code.
+
+Other flags: `--today YYYY-MM-DD` renders the board as of another date (for
+the day-count windows and warm-up), `--state PATH` uses a different state
+file, and `init --force` overwrites an existing `roadmap.toml`.
+
+### The SessionStart hook
+
+The plugin runs a check when each Claude Code session starts. **When nothing
+needs attention it prints nothing.** When something does, it prints a short
+`ROADMAP CADENCE CHECK` block naming each condition and the command to fix
+it. Two conditions are gentle nudges, scope creep and a low on-plan share,
+and those print at most once every three days (set
+`ROADMAP_CADENCE_DAYS` to change that). Everything else repeats every
+session until fixed, including a hotfix queue that holds a priority-0/1
+issue. The same conditions appear at the bottom of the full board, so
+`/roadmap` is always the place to look closer.
+
 ## Conventions your board must already follow
 
 This tool derives everything from existing `bd` conventions. If your board
@@ -131,7 +279,8 @@ board — without an error telling you why:
 5. **`bd`'s `feature` / `epic` / `bug` issue types and 0–4 priority scale are
    in use.** Unscheduled work is `feature`/`epic` rows carrying no release
    label; the hotfix queue is priority-0/1 bugs (plus security-marked
-   priority-0/1/2 issues) carrying no release label either.
+   priority-0/1/2 issues) carrying no release label either. Deferred issues
+   are left out of both.
 
 ## Requirements
 
@@ -153,13 +302,15 @@ prove the newer ones still pass.
 **`bd` (beads).** The tool shells out to exactly one read, twice:
 
 ```
-bd list --status=open   -n 0 --json
+bd list --status=open,in_progress,blocked,deferred -n 0 --json
 bd list --status=closed -n 0 --json
 ```
 
 and reads these fields off each row: `id`, `title`, `labels`, `issue_type`,
-`priority`, `parent`, `updated_at`. `-n 0` is mandatory — `bd list` silently
-truncates otherwise.
+`priority`, `parent`, `status`, `updated_at`. `-n 0` is mandatory — `bd list`
+silently truncates otherwise. `--status` is an exact match, so every
+not-done status is named, in one comma-separated flag: repeating `--status`
+silently keeps only the last one.
 
 **Verified against `bd` 1.2.2. No lower bound has been tested**, so no minimum
 is claimed here: an older `bd` may well work, and stating a floor that was
