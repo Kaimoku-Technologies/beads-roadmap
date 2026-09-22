@@ -195,14 +195,75 @@ _tokens = {t for lit in _literals for t in lit}
 # MUST-HIT control: if the walk finds nothing the assertion below is vacuous
 # and would pass against a hook that shells out freely.
 check('control — AST walk found the hook argv', '--json' in _tokens)
-# Was a second control on '--state'. The hook no longer passes it
-# (github-kkq4a, I3) -- it reads the resolved path back out of the --json
-# payload instead -- so this is now a MUST-MISS pinning that contract. The
-# '--json' control above still proves the walk found the argv list, so the
-# write-verb assertion below cannot pass vacuously.
-check('the hook does not pass --state (it reads state_path back)',
-      '--state' not in _tokens)
+# A second witness that the walk found the (conditional) override literal
+# `['--state', forced_state]` (github-kkq4a, I3). This proves the AST walk
+# saw that branch too -- nothing more. It does NOT prove the DEFAULT path
+# omits --state, or that the override's path value actually reaches argv at
+# runtime: a hook could pass a harmless --state on every run and separately
+# read state_path back from the payload, and this control would still pass.
+# The real behavioural contract -- default omits --state, override carries
+# it with the exact forced path -- is pinned at runtime below, not here.
+check('control — AST walk found the override argv literal', '--state' in _tokens)
 check('no write verb reaches any hook argv literal', not (_tokens & WRITE_VERBS))
+
+# --- I3 (github-kkq4a), Finding 1: pin the REAL contract at runtime. The AST
+# controls above only prove a string literal exists somewhere in the source;
+# they cannot tell whether it reaches the actual subprocess argv, or whether
+# the two branches (forced vs default) land in the right place. Run the hook
+# against a stub that records its own sys.argv, both directions.
+def _record_argv_stub(capture_path):
+    """A fake roadmap that writes its OWN sys.argv (as JSON) to
+    `capture_path`, then answers with a clean payload and exits 0."""
+    fd, path = tempfile.mkstemp(suffix='.py')
+    os.close(fd)
+    with open(path, 'w') as fh:
+        fh.write('#!/usr/bin/env python3\nimport sys, json\n')
+        fh.write('open(%r, "w").write(json.dumps(sys.argv))\n' % capture_path)
+        fh.write('sys.stdout.write(%r)\n' % CLEAN)
+        fh.write('sys.exit(0)\n')
+    os.chmod(path, 0o755)
+    return path
+
+# UNSET: the default path must not carry --state at all.
+_fd, _argv_unset = tempfile.mkstemp(suffix='.json')
+os.close(_fd)
+os.unlink(_argv_unset)
+_env_unset = dict(os.environ, ROADMAP_CADENCE_BIN=_record_argv_stub(_argv_unset),
+                  ROADMAP_CADENCE_DAYS='3', ROADMAP_CADENCE_TIMEOUT='10')
+_env_unset.pop('ROADMAP_CADENCE_STATE', None)
+subprocess.run([sys.executable, HOOK], capture_output=True, text=True,
+               env=_env_unset, timeout=30)
+# Guarded like the stamp check below: under a falsified HOOK (a substitute
+# that never shells out to ROADMAP_CADENCE_BIN at all) the capture file is
+# never written, and an unguarded read here would raise past every later
+# arm instead of failing this one via check().
+_recorded_unset = (json.loads(open(_argv_unset).read())
+                   if os.path.exists(_argv_unset) else [])
+check('argv carries --json when ROADMAP_CADENCE_STATE is unset',
+      '--json' in _recorded_unset)
+check('argv omits --state when ROADMAP_CADENCE_STATE is unset',
+      '--state' not in _recorded_unset)
+
+# SET: the override must reach argv, followed by the exact forced path.
+_fd, _argv_set = tempfile.mkstemp(suffix='.json')
+os.close(_fd)
+os.unlink(_argv_set)
+_fd, _forced_path = tempfile.mkstemp(suffix='.json')
+os.close(_fd)
+os.unlink(_forced_path)
+_env_set = dict(os.environ, ROADMAP_CADENCE_BIN=_record_argv_stub(_argv_set),
+                ROADMAP_CADENCE_DAYS='3', ROADMAP_CADENCE_TIMEOUT='10',
+                ROADMAP_CADENCE_STATE=_forced_path)
+subprocess.run([sys.executable, HOOK], capture_output=True, text=True,
+               env=_env_set, timeout=30)
+# Guarded for the same reason as the UNSET arm above.
+_recorded_set = (json.loads(open(_argv_set).read())
+                 if os.path.exists(_argv_set) else [])
+check('argv carries --state when ROADMAP_CADENCE_STATE is set',
+      '--state' in _recorded_set)
+check('the --state value is the exact forced path',
+      '--state' in _recorded_set and
+      _recorded_set[_recorded_set.index('--state') + 1] == _forced_path)
 
 # --- I3 (github-kkq4a): the hook stamps the path the BINARY resolved -------
 # The hook used to compute ~/.claude/roadmap-cadence-state.json itself and
@@ -229,8 +290,13 @@ check('hook speaks on a dirty payload with no --state', 'SCOPE CREEP' in _p.stdo
 # machine and carries live state.
 check('hook stamped the path the payload named', os.path.exists(_sp))
 # And the stamp is a real timestamp, not a zero or an empty file -- so a hook
-# that merely touched the path would still fail here.
+# that merely touched the path would still fail here. Guarded (short-circuit
+# on os.path.exists) so a falsification run where _sp is never created fails
+# this ONE check via `check()` rather than raising past it -- an unguarded
+# read here would abort the script before every later arm runs, which is not
+# a falsification, it is skipping most of the suite.
 check('the stamp it wrote is a real timestamp',
+      os.path.exists(_sp) and
       json.loads(open(_sp).read()).get('last_reported_at', 0) > 0)
 
 # A payload with NO state_path (the unavailable/unconfigured shape, or an

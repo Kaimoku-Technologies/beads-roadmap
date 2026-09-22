@@ -132,13 +132,7 @@ def main():
 
     argv = [binary, '--json']
     if forced_state:
-        # append(), not a second list literal: the AST walk below (the same
-        # technique bin/roadmap-selftest.py uses) treats every list literal
-        # in the file as a potential argv, so a literal ['--state', ...] here
-        # would trip the "hook does not pass --state" control even though
-        # this IS the documented, deliberate override path.
-        argv.append('--state')
-        argv.append(forced_state)
+        argv += ['--state', forced_state]
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except Exception:
