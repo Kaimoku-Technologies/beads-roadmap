@@ -102,7 +102,33 @@ Then amend `compute_throughput`'s docstring, adding after the existing first par
 Run: `python3 bin/roadmap-selftest.py` then `python3 hooks/test_roadmap_cadence.py`
 Expected: `ok` from both.
 
-- [ ] **Step 5: Verify `_namespace_mismatch` is still pinned to the agnostic helper — do NOT add a test**
+- [ ] **Step 5: Commit — BEFORE the mutation drill below**
+
+The drill in Step 6 ends in `git checkout -- bin/roadmap`, which discards
+**every** uncommitted change in that file, not just the mutation. An
+implementer on this project lost a real fix exactly that way. Commit first;
+amend afterwards if the drill changes your mind about anything.
+
+```bash
+git add bin/roadmap bin/roadmap-selftest.py
+git commit -m "fix(roadmap): throughput counts this product's release sets, not every namespace (github-kkq4a)
+
+compute_throughput used release_labels() where every version path uses
+release_versions(i, cfg), so in a shared bd workspace another product's
+release labels counted toward this product's on-plan share.
+
+The existing fixtures could not detect the change -- TP_CLOSED's only
+labelled row is already acme-app -- so the new assertions add a
+foreign-namespace row, with a closed_7d control proving that row is in the
+window and human-authored.
+
+_namespace_mismatch deliberately KEEPS the agnostic helper; mutation-checked
+that selftest:1245 fails if it is switched.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+- [ ] **Step 6: Verify `_namespace_mismatch` is still pinned to the agnostic helper — do NOT add a test**
 
 `_namespace_mismatch` (`bin/roadmap:247`) **must keep `release_labels`** — finding labels in some *other* namespace is its entire job, and `release_versions` would make it structurally unable to fire. This is already pinned: `bin/roadmap-selftest.py:1245` asserts `rm._namespace_mismatch(MISMATCH_MULTI, []) == ['ns-a', 'ns-b']`, and under `release_versions` the `labelled` list would be empty and it would return `None`.
 
@@ -123,28 +149,17 @@ python3 bin/roadmap-selftest.py; echo "EXIT=$?"
 git checkout -- bin/roadmap
 ```
 
-Expected: the mutated run **fails** (non-zero exit) naming a `_namespace_mismatch` assertion. If it passes, the guard is not real — stop and report that, do not proceed. The `git checkout` restores the file either way; re-run `python3 bin/roadmap-selftest.py` afterwards and confirm `ok` before committing.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add bin/roadmap bin/roadmap-selftest.py
-git commit -m "fix(roadmap): throughput counts this product's release sets, not every namespace (github-kkq4a)
-
-compute_throughput used release_labels() where every version path uses
-release_versions(i, cfg), so in a shared bd workspace another product's
-release labels counted toward this product's on-plan share.
-
-The existing fixtures could not detect the change -- TP_CLOSED's only
-labelled row is already acme-app -- so the new assertions add a
-foreign-namespace row, with a closed_7d control proving that row is in the
-window and human-authored.
-
-_namespace_mismatch deliberately KEEPS the agnostic helper; mutation-checked
-that selftest:1245 fails if it is switched.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
-```
+Expected: the mutated run **fails**, `EXIT=1`. Measured signature: not a named
+`FAIL (n)` line but an **uncaught `KeyError: 7`** from
+`check('c7 bypasses the throttle', conds(MM_MODEL, state())[7]['bypass'], True)`
+— the detector returns `None`, condition 7 never fires, and the `conds(...)[7]`
+index raises before the suite prints anything. (The earlier
+`c7 fires on a full namespace mismatch` failure is recorded but never printed,
+because the traceback aborts the run; that truncation is the deferred
+`conds(...)[N]` class, `github-086tz`.) Either way the guard is real. If the
+run passes, it is not — stop and report that, do not proceed. `git checkout`
+restores the file; re-run `python3 bin/roadmap-selftest.py` afterwards and
+confirm `ok`.
 
 ---
 
@@ -667,21 +682,24 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `payload['state_path']` from Task 4's `render_json`.
 - Produces: no new functions. The hook's subprocess argv becomes `[binary, '--json']`.
 
-**The AST control trap — read this before editing the test file.** `hooks/test_roadmap_cadence.py:198` asserts `'--state' in _tokens` as a control proving the AST walk actually found the hook's argv list. Removing `--state` from that argv breaks it. **Do not delete the line** — deleting it halves the guard that keeps `no write verb reaches any hook argv literal` from passing vacuously. Convert it into a must-miss that pins the new contract.
+**The AST control trap — read this before editing the test file.** `hooks/test_roadmap_cadence.py:198` asserts `'--state' in _tokens` as a control proving the AST walk actually found the hook's argv list. **Do not delete the line** — deleting it halves the guard that keeps `no write verb reaches any hook argv literal` from passing vacuously.
+
+**Corrected after implementation.** An earlier draft of this step told you to turn that line into a must-miss, `check('the hook does not pass --state (it reads state_path back)', '--state' not in _tokens)`. That is **incompatible with Step 3 below**, which deliberately keeps a conditional `argv += ['--state', forced_state]` for the testing seam and the deliberate-override escape hatch: the literal is still in the source, so the must-miss fails against the correct hook. The implementer deviated here and was right to. What replaced it — pinning the contract at **runtime**, with a stub that records its own `sys.argv` — is strictly better anyway: an AST literal proves only that a string exists somewhere in the file, never that it reaches the subprocess.
 
 - [ ] **Step 1: Write the failing tests**
 
-Replace line 198 (`check('control — AST walk found the state flag', '--state' in _tokens)`) with:
+Keep line 198 as a control, re-commented to say what it does and does not prove:
 
 ```python
-# Was a second control on '--state'. The hook no longer passes it
-# (github-kkq4a, I3) -- it reads the resolved path back out of the --json
-# payload instead -- so this is now a MUST-MISS pinning that contract. The
-# '--json' control above still proves the walk found the argv list, so the
-# write-verb assertion below cannot pass vacuously.
-check('the hook does not pass --state (it reads state_path back)',
-      '--state' not in _tokens)
+# A second witness that the AST walk found the (conditional) override literal
+# `['--state', forced_state]` (github-kkq4a, I3). This proves the walk saw
+# that branch -- nothing more. It does NOT prove the DEFAULT path omits
+# --state, or that the override's value reaches argv at runtime. The real
+# behavioural contract is pinned at runtime below.
+check('control — AST walk found the override argv literal', '--state' in _tokens)
 ```
+
+Then pin the contract behaviourally, both directions, with a stub that writes its own `sys.argv` to a capture file: with `ROADMAP_CADENCE_STATE` unset the recorded argv carries `--json` and **no** `--state`; with it set, `--state` is present and followed by the exact forced path. Guard each read of the capture file with `os.path.exists`, and use `None` — never `[]` — as the fallback: an empty container satisfies every `not in`, so the must-miss would pass vacuously against a falsified run that never captured anything. Gate both directions on a dedicated `captured the argv at all` must-hit.
 
 Then add new behavioural arms. `run_hook` always sets `ROADMAP_CADENCE_STATE`, so these call the hook directly with a controlled environment:
 
@@ -728,7 +746,7 @@ check('unconfigured nudge still exits 0', _rc == 0)
 - [ ] **Step 2: Run the hook suite to verify the new assertions fail**
 
 Run: `python3 hooks/test_roadmap_cadence.py`
-Expected: `the hook does not pass --state (it reads state_path back)` fails (the hook still passes it), and `hook stamped the path the payload named` fails (the file is not created). `control — AST walk found the hook argv` must still pass.
+Expected, corrected to match what was actually built: `hook stamped the path the payload named` and `the stamp it wrote is a real timestamp` fail — the pre-Step-3 hook computes its own path, so the payload's file is never created — along with `argv omits --state when ROADMAP_CADENCE_STATE is unset`, since the old hook passes `--state` on every run. Both AST controls (`found the hook argv`, `found the override argv literal`) must still pass. There is **no** `the hook does not pass --state` arm: that assertion cannot fail against the correct hook, which keeps the conditional literal, and it is not written.
 
 - [ ] **Step 3: Change the hook**
 
@@ -1049,7 +1067,7 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] — 2026-09-21
+## [0.2.0] — 2026-09-22
 
 Deferred hardening from the cold-start review.
 
@@ -1062,9 +1080,12 @@ Deferred hardening from the cold-start review.
   and `unconfigured_reported` — so two products at the same version, or a
   throwaway run from a scratch repo, silently overwrote each other.
   **There is no automatic migration**, on purpose: seeding the new file from
-  the old one would hand every workspace the same baselines. `roadmap` prints
-  a one-time `cp` line naming both paths; run it if you want to keep your
-  scope-creep baselines, or ignore it and re-baseline with `roadmap pin`.
+  the old one would hand every workspace the same baselines. `roadmap` names
+  both paths and the `cp`, and the SessionStart hook says the same thing once
+  in-session — the old file was shared, so it may hold *another* workspace's
+  baselines, and copying it is right only in the workspace that was using it.
+  Ignoring it costs a re-baseline with `roadmap pin`. See
+  [Upgrading from 0.1.x](README.md#upgrading-from-01x).
 - **A repo with no semver `v*` tags no longer shows its lowest version as "in
   flight".** Nothing has been cut, so nothing is in flight and every labelled
   version is reported as planned, with a new drift condition naming the state.
@@ -1082,6 +1103,10 @@ Deferred hardening from the cold-start review.
 
 - `state_path` in the `--json` payload, so the SessionStart hook stamps the
   file the binary actually resolved rather than computing its own.
+- `legacy_state_available` in the `--json` payload, and a one-time
+  `additionalContext` message in the SessionStart hook keyed on it. The
+  binary's own notice goes to stderr, which the hook discards, so on the
+  default install path the state move reached nobody.
 - `CHANGELOG.md` (this file).
 
 ### Documentation
@@ -1102,15 +1127,37 @@ Deferred hardening from the cold-start review.
 
 ## [0.1.1] — 2026-09-21
 
+0.1.0 shipped with two Critical defects found by a cold-start review, both on
+the default install path and both silent rather than loud, plus four related
+fixes bundled into the same release.
+
 ### Fixed
 
-- `init` refuses to guess `release_namespace`, reading it off the board
-  instead; an ambiguous or absent namespace is named rather than resolved by
-  falling back to the directory name.
-- An ambient `BEADS_DIR` no longer overrides the configured `workspace`.
+- `init` refuses to guess `release_namespace` from the directory name;
+  it now reads the namespace off the board itself and refuses when it's
+  ambiguous or absent, naming what it found instead of silently rendering
+  an empty roadmap under the wrong namespace.
+- An ambient `BEADS_DIR` no longer overrides the configured `workspace` —
+  it was silently redirecting `bd` to an unrelated board while `roadmap.toml`
+  still claimed the right one.
 - `roadmap plan` distinguishes "nothing descends from the gating epics"
-  (ready to cut) from "there is no gating epic" (no verdict available).
-- The user-facing surfaces match the honest plan verdict.
+  (ready to cut) from "there is no gating epic to check against" (no verdict
+  available); both used to print as the same false "ready to cut" claim.
+- The unenforced Python 3.11 floor now fails open with a named reason
+  (`roadmap: unavailable: ...`) instead of an uncaught traceback on an older
+  interpreter — the traceback's exit 1 read as permanent, undiagnosable
+  silence through the SessionStart hook's fail-open handling.
+- A fresh install with no `roadmap.toml` now tells the user once, via the
+  hook, to run `roadmap init`; every other "unavailable" reason stays
+  silent, unchanged. Previously this state was indistinguishable from every
+  other silent failure.
+- Remediation text named `bin/roadmap`, which doesn't exist for an installed
+  plugin (Claude Code puts a bare `roadmap` on `PATH`) — fixed in the text
+  the binary itself emits. (Two more instances, in `SKILL.md` and
+  `commands/roadmap.md`, were missed here and fixed in 0.1.2.)
+- The user-facing surfaces (README, `SKILL.md`, `commands/roadmap.md`) match
+  the honest plan verdict above, and the README's drift-condition count was
+  corrected for the namespace-mismatch condition this release added.
 
 ## [0.1.0] — 2026-09-21
 
