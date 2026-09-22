@@ -846,7 +846,7 @@ def compute_throughput(open_issues, closed_issues, tag_dates, today, in_flight,
         d = datetime.date.fromisoformat(today) - datetime.timedelta(days=days)
         return d.isoformat()
 
-    human = [i for i in closed_issues if is_human_authored(i)]
+    human = [i for i in closed_issues if is_human_authored(i, cfg)]
     out = {}
     for days in (7, 28):
         cut = since(days)

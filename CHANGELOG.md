@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`compute_throughput(cfg=...)` now governs the human-authored filter too.**
+  It resolved its cfg but called `is_human_authored` without it, so the module
+  config (not the one passed in) decided which closed issues counted as
+  auto-filed. Latent: the CLI never passes an explicit cfg, so the two always
+  agreed in practice.
+
 ## [0.2.0] — 2026-09-22
 
 Deferred hardening from the cold-start review.

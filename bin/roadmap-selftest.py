@@ -787,13 +787,11 @@ check('the cfg fallback still honours warm-up',
       None)
 
 # Arm 2: no cfg AND no module CONFIG -> datetime.date.today(). TP_CLOSED
-# cannot be reused here: with CONFIG cleared, is_human_authored(i) (called
-# with no cfg of its own -- it reads the module CONFIG directly,
-# uncoordinated with the local `cfg` this function resolves) crashes on
-# TypeError the moment it meets a LABELLED closed issue (filed as
-# github-086tz; bin/roadmap is untouched by this task). convention_start's
-# own fallback line runs fine first, but the function never reaches the
-# on_plan_share_14d computation that would let us observe it. An unlabeled
+# cannot be reused here: with no cfg AND CONFIG cleared, the resolved cfg is
+# None and is_human_authored crashes on TypeError the moment it meets a
+# LABELLED closed issue. convention_start's own fallback line runs fine
+# first, but the function never reaches the on_plan_share_14d computation
+# that would let us observe it. An unlabeled
 # fixture sidesteps that unrelated crash -- labels_of() is empty, so the
 # `cfg['auto_label_prefixes']` lookup never executes -- without masking the
 # thing this arm actually tests.
@@ -821,6 +819,24 @@ check('no cfg and no CONFIG falls back to today(), not the fail-open path',
 check('the unlabelled row gives a 0.0 share', _fb2['on_plan_share_14d'], 0.0)
 check('CONFIG restored after the fallback arm (control)',
       rm.CONFIG['release_namespace'], 'acme-app')
+
+# --- github-086tz: an explicit cfg governs the human-authored filter too ---
+# compute_throughput resolved `cfg = cfg or CONFIG` and then called
+# is_human_authored(i) bare, so the module CONFIG, not the passed cfg, decided
+# which closed rows were auto-filed. OTHER_CFG drops 'resource-watch' from the
+# prefixes, so c4 is human under it and auto-filed under TEST_CFG -- the one
+# row that tells the two configs apart. LABELLED rows are the point: the
+# Arm 2 fixture above is unlabelled and cannot see this.
+OTHER_CFG = dict(TEST_CFG, auto_label_prefixes=('audit-fp:',))
+check('an explicit cfg decides which rows are auto-filed',
+      rm.compute_throughput([], TP_CLOSED, TAG_DATES, '2026-09-21', (0, 16, 0),
+                            convention_start='2026-09-20',
+                            cfg=OTHER_CFG)['closed_7d'], 3)
+# MUST-HIT control: the SAME call with no cfg still reads the module CONFIG and
+# excludes c4. Without it, a filter that ignored prefixes entirely would pass.
+check('with no cfg the module CONFIG still decides (control)',
+      rm.compute_throughput([], TP_CLOSED, TAG_DATES, '2026-09-21', (0, 16, 0),
+                            convention_start='2026-09-20')['closed_7d'], 2)
 
 # --- fix round 3: convention_start has ONE source, not two ----------------
 # compute_throughput used to read the hardcoded module CONVENTION_START while
