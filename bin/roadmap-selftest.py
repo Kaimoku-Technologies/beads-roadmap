@@ -2116,6 +2116,29 @@ check('the plugin version is three dotted integers',
 check('plugin.json and marketplace.json agree on the version',
       _PLUGIN_VERSION, _MARKET_VERSION)
 
+# --- payload-key agreement across the two suites --------------------------
+# render_json (tested here) and the hook (tested in hooks/test_roadmap_cadence
+# .py) are a producer and a consumer that never meet: each suite hand-writes
+# the other side's payload, so renaming a key in one file would leave BOTH
+# suites green while the flag silently stopped arriving -- the same shape as
+# the C1 defect this branch fixes, where a message had a sender and no
+# receiver. Pin the names to each other (github-kkq4a).
+_HOOK_SRC = open(os.path.join(_ROOT, 'hooks', 'roadmap-cadence.py')).read()
+_RENDERED_KEYS = rm.render_json({'versions': {}, 'unscheduled': [], 'hotfix': []}, [])
+for _key in ('state_path', 'legacy_state_available', 'conditions'):
+    check('the hook reads %r by the name render_json emits it' % _key,
+          _key in _HOOK_SRC and ('"%s"' % _key) in _RENDERED_KEYS, True)
+# `unconfigured` is emitted by main()'s unavailable branch, NOT by
+# render_json -- the I8 arms further up assert the producing half. Only the
+# consumer's half is pinned here, which is what this check can see.
+check('the hook reads `unconfigured` by that name',
+      'unconfigured' in _HOOK_SRC, True)
+# MUST-MISS control: a plausible-but-wrong name is in neither, so the loop
+# above is a real search over real content rather than a pair of substrings
+# any file would satisfy.
+check('a key neither side uses is found in neither (control)',
+      'legacy_state_migrated' in _HOOK_SRC, False)
+
 # --- decoupling scan ------------------------------------------------------
 # A property test, not an example test: no shipped file may name the
 # workspace this tool came from. The fixture rename above makes a surviving
