@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A release in another namespace now counts as scheduled.** In a bd
+  workspace shared by several products, an issue already tagged for a
+  sibling product's release was still offered by `roadmap plan` (and could
+  sit in the hotfix queue or the unscheduled list) as if it had no version,
+  and the paste-ready block would have given it a second, wrong release.
+  Those three surfaces now skip any issue with a release label in any
+  namespace, and so do the JSON `hotfix_count` / `unscheduled_count` and
+  the session-start nags built on them. Version and throughput counts are
+  unchanged: they still count only this board's namespace.
+
 ### Documentation
 
 - **Install without git.** The README's "Using it with other agents" now

@@ -1571,6 +1571,42 @@ check('proposal caps at 7', len(rm.propose(MANY, MANY_M, (0, 18, 0))), 7)
 check('proposal reports the true total',
       rm.propose_total(MANY, MANY_M, (0, 18, 0)), 11)
 
+# --- github-478rk: a FOREIGN release label means "scheduled" ---------------
+# In a shared bd workspace an issue tagged for ANOTHER product's release was
+# still proposed here, because the filter was namespace-filtered
+# release_versions(). Live 2026-09-23: five issues carrying a sibling
+# product's release label were offered by `roadmap plan` for a second,
+# wrong release in THIS namespace. The same predicate fed the hotfix
+# queue and the unscheduled list. Each must-miss is paired with an
+# unlabelled sibling that must still HIT, or an empty surface would pass.
+FOREIGN = 'release:other-app-v0.4.0'
+FOR_OPEN = [
+    tagged('v0.18.0', id='ep-1', issue_type='epic', priority=2),
+    issue(id='ep-1.1', priority=2, labels=[FOREIGN]),
+    issue(id='ep-1.2', priority=2),
+    issue(id='fx-bug', issue_type='bug', priority=1, labels=[FOREIGN]),
+    issue(id='hx-bug', issue_type='bug', priority=1),
+    issue(id='fx-feat', issue_type='feature', priority=2, labels=[FOREIGN]),
+    issue(id='ux-feat', issue_type='feature', priority=2),
+]
+FOR_M = rm.build_model(FOR_OPEN, [], [(0, 15, 0)])
+_for_prop = [i['id'] for i in rm.propose(FOR_OPEN, FOR_M, (0, 18, 0))]
+check('478rk must-miss: plan skips a foreign-release descendant',
+      'ep-1.1' in _for_prop, False)
+check('478rk must-hit: plan keeps the unlabelled sibling', 'ep-1.2' in _for_prop, True)
+_for_hot = [i['id'] for i in FOR_M['hotfix']]
+check('478rk must-miss: hotfix queue skips a foreign-release P1 bug',
+      'fx-bug' in _for_hot, False)
+check('478rk must-hit: hotfix queue keeps the unlabelled P1 bug', 'hx-bug' in _for_hot, True)
+_for_uns = [i['id'] for i in FOR_M['unscheduled']]
+check('478rk must-miss: unscheduled skips a foreign-release feature',
+      'fx-feat' in _for_uns, False)
+check('478rk must-hit: unscheduled keeps the unlabelled feature', 'ux-feat' in _for_uns, True)
+# Counts stay namespace-filtered (github-kkq4a M9): the foreign label must
+# NOT create a version on this board.
+check('478rk: a foreign release creates no version here',
+      sorted(FOR_M['versions']), [(0, 18, 0)])
+
 # --- github-aci1y: the open FAMILY is read, and deferred is split by view --
 # load_issues read --status=open and --status=closed only, and bd's filter is
 # EXACT, so in_progress/blocked/deferred rows reached no bucket -- a versioned

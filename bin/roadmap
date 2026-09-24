@@ -230,6 +230,10 @@ def labels_of(issue):
 
 
 def release_labels(issue):
+    """Release labels in ANY namespace. The "is this scheduled yet?" test for
+    the plan, hotfix and unscheduled surfaces (github-478rk): a release in a
+    sibling product's namespace is still a yes. Counts use release_versions()
+    instead, so a foreign release never inflates this board."""
     return [l for l in labels_of(issue) if version_of_label(l) is not None]
 
 
@@ -447,14 +451,14 @@ def build_model(open_issues, closed_issues, tags):
     unscheduled = sorted(
         (i for i in open_issues
          if i.get('issue_type') in ('feature', 'epic')
-         and not release_versions(i)
+         and not release_labels(i)
          and is_human_authored(i)
          and not is_deferred(i)),
         key=_rank)
 
     hotfix = sorted(
         (i for i in open_issues
-         if is_hotfix(i) and not release_versions(i) and not is_deferred(i)),
+         if is_hotfix(i) and not release_labels(i) and not is_deferred(i)),
         key=_rank)
 
     return {'cut': cut, 'no_tags': no_tags, 'in_flight': in_flight, 'planned': planned,
@@ -617,7 +621,7 @@ def _candidates(open_issues, model, version):
     byid = {i['id']: i for i in open_issues}
     out = [i for i in open_issues
            if is_human_authored(i)
-           and not release_versions(i)
+           and not release_labels(i)
            and not is_deferred(i)
            and any(descends_from(i, e, byid) for e in epics)]
     return sorted(out, key=_rank)
