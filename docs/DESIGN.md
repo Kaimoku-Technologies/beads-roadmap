@@ -45,15 +45,15 @@ on a version the tool has never seen before either). Condition 6 only fires
 on a run where `last_cut` was already recorded from a *previous* run and the
 current cut differs from it.
 
-## The SessionStart hook and its eight conditions
+## The SessionStart hook and its nine conditions
 
 A roadmap that must be visited to matter will not be visited once a board has
 any real size. `hooks/roadmap-cadence.py` runs `roadmap --json` at session
-start and, when the render surfaces one or more of eight conditions, prints a
+start and, when the render surfaces one or more of nine conditions, prints a
 short report into the session's context. When there is nothing to report, it
 prints nothing — silence is the default outcome, not a fallback.
 
-The eight conditions `evaluate()` can raise, in order:
+The nine conditions `evaluate()` can raise, in order:
 
 1. **Horizon empty** — nothing is tagged above the version in flight (or
    above the last cut tag, if nothing is in flight). There is no plan beyond
@@ -90,6 +90,12 @@ The eight conditions `evaluate()` can raise, in order:
    repo that genuinely never cut a release. `roadmap init` warns on this same
    state instead of refusing to configure it — this is the render-time half
    of that one finding, not a second finding.
+9. **Horizon short** — opt-in via `horizon = N` in `roadmap.toml` (0, the
+   default, is off). Fewer than N minor versions, the in-flight one included,
+   carry work. Patch versions never fill a slot. Silent while the horizon is
+   *empty*, which is condition 1's job, so the two never double-report. It
+   names the next minor to tag and points at the backlog
+   (`release:<namespace>-backlog`) as the first place to promote from.
 
 Each condition is either **throttled** (reported at most once every N days,
 default 3) or marked **bypass** (repeats every session regardless of
@@ -99,7 +105,7 @@ just-cut version with nothing queued behind it, a namespace that matches
 nothing on the board, or a repo that has never cut a tag. Condition 5's
 bypass is **conditional on what's in the queue**: it bypasses whenever the
 queue holds a priority-0/1 issue, and is plain-throttled — like conditions 2
-and 3 — when everything in it is P2-security-only. A P0/P1 hotfix repeats
+and 3 (and 9) — when everything in it is P2-security-only. A P0/P1 hotfix repeats
 every session until it is either versioned or downgraded; a P2-security-only
 queue gets the same at-most-once-every-3-days treatment as scope creep or
 off-plan share.

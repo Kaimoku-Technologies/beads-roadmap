@@ -126,6 +126,7 @@ outside a session; see above).
 | `/roadmap v1.2.0` | One version in detail: every open issue, gating epics, counts |
 | `/roadmap hotfix` | The full hotfix queue (the board shows the top three) |
 | `/roadmap unscheduled` | Every feature and epic with no version (the board shows the top three) |
+| `/roadmap backlog` | Every issue labelled `release:<namespace>-backlog`: triaged, deliberately beyond the horizon |
 | `/roadmap plan` | Proposes what to put in the next planned version |
 | `/roadmap plan v1.2.0` | The same for a specific version |
 | `/roadmap pin v1.2.0` | Re-baselines that version's scope-creep snapshot |
@@ -194,7 +195,7 @@ ROADMAP · acme-app · cut v1.1.0
   version's current issues with the baseline taken when it went in flight.
 - **Drift conditions**, when any apply, print last. Each names the problem
   and the command that fixes it. See [`docs/DESIGN.md`](docs/DESIGN.md) for
-  all eight.
+  all nine.
 
 Issues auto-filed by tooling (labels matching `auto_label_prefixes` in
 `roadmap.toml`) are left out of the hotfix queue, the unscheduled list,
@@ -285,12 +286,12 @@ session-start check. Here is how to get each of those elsewhere.
 Download a release and put `roadmap` on your `PATH`; no git needed:
 
 ```
-curl -fsSL https://github.com/Kaimoku-Technologies/beads-roadmap/archive/refs/tags/v0.4.1.tar.gz | tar xz
-ln -s "$PWD/beads-roadmap-0.4.1/bin/roadmap" ~/.local/bin/roadmap
+curl -fsSL https://github.com/Kaimoku-Technologies/beads-roadmap/archive/refs/tags/v0.5.0.tar.gz | tar xz
+ln -s "$PWD/beads-roadmap-0.5.0/bin/roadmap" ~/.local/bin/roadmap
 roadmap --version
 ```
 
-Keep the unpacked `beads-roadmap-0.4.1/` directory where it is: the link
+Keep the unpacked `beads-roadmap-0.5.0/` directory where it is: the link
 points into it, and `roadmap check` and `--version` read files beside the
 script. Any directory on your `PATH` works in place of `~/.local/bin`.
 `--version` should print a path inside that directory. Install 0.4.0 or
@@ -387,6 +388,18 @@ board — without an error telling you why:
    label; the hotfix queue is priority-0/1 bugs (plus security-marked
    priority-0/1/2 issues) carrying no release label either. Deferred issues
    are left out of both.
+6. **Optional: `release:<namespace>-backlog` marks triaged work you have
+   deliberately parked beyond the horizon.** It takes a row out of the
+   unscheduled list (any type is listed by `roadmap backlog`), so
+   "unscheduled" comes to mean *nobody has triaged this yet*. It never
+   exempts a row from the hotfix queue, and a backlogged priority-0/1
+   feature or epic is still reported, because parking something that severe
+   is itself the planning bug. Promote from the backlog by removing the
+   label and adding a version.
+7. **Optional: `horizon = N` in `roadmap.toml`** asks for the in-flight
+   version plus the planned minors to number at least N. When fewer carry
+   work, the board and the session-start check report `HORIZON SHORT` and
+   name the next minor to tag. Off (0) by default.
 
 ## Requirements
 
@@ -437,7 +450,7 @@ tracker; don't follow them expecting a link to work.
 ## Design
 
 See [`docs/DESIGN.md`](docs/DESIGN.md) for the short public design: what
-"derived, not stored" means concretely, the eight drift conditions the
+"derived, not stored" means concretely, the nine drift conditions the
 SessionStart hook can report, and the fail-open contract that keeps a broken
 or unconfigured install from ever breaking a session.
 

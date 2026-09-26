@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-26
+
+### Added
+
+- **A backlog label: `release:<namespace>-backlog`.** It marks work you
+  have triaged and deliberately parked beyond the horizon. Such rows leave
+  the unscheduled list, so "unscheduled" now means *nobody has triaged this
+  yet*, and `roadmap backlog` lists them (every issue type). The board
+  prints a `BACKLOG` count; `--json` carries `backlog_count` and `backlog`.
+  A backlog label never takes a bug out of the hotfix queue, and a
+  backlogged priority-0/1 feature or epic is still reported by the
+  unscheduled-P0/P1 condition, marked `(backlog)`.
+- **A planning horizon: `horizon = N` in `roadmap.toml`.** A new drift
+  condition, **HORIZON SHORT** (condition 9, throttled), fires when fewer
+  than N minor versions, the in-flight one included, carry work, and names
+  the next minor to tag. Patch versions never fill a slot. It stays quiet on
+  an empty horizon, which condition 1 already reports. Off by default, so
+  nothing changes until you set it; `--json` carries `horizon`.
+
 ## [0.4.1] — 2026-09-23
 
 ### Fixed

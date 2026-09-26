@@ -60,6 +60,9 @@ WARMUP_DAYS = 14
 
 _VERSION_RE = re.compile(r'^v?(\d+)\.(\d+)\.(\d+)$')
 _RELEASE_RE = re.compile(r'^release:(.+)-(v\d+\.\d+\.\d+)$')
+# `release:<ns>-backlog` (github-18xti.2): triaged, deliberately beyond the
+# horizon. It never matches _RELEASE_RE, so it is never read as a version.
+_BACKLOG_RE = re.compile(r'^release:(.+)-backlog$')
 
 
 class RoadmapUnavailable(Exception):
@@ -80,7 +83,7 @@ class RoadmapUnavailable(Exception):
 
 
 CONFIG_KEYS = ('workspace', 'tag_repo', 'release_namespace',
-               'convention_start', 'auto_label_prefixes')
+               'convention_start', 'auto_label_prefixes', 'horizon')
 REQUIRED_KEYS = ('workspace', 'tag_repo', 'release_namespace')
 
 # Set by configure(); every cfg=None default falls back to it. A module
@@ -172,6 +175,15 @@ def load_config(path=None, start=None, env=None, today=None):
                 '%s: auto_label_prefixes must be a list of strings, got %r'
                 % (path, prefixes))
 
+    # horizon is OPTIONAL and defaults to 0 = condition 9 off, so an existing
+    # install sees no change until it opts in. bool is rejected by name:
+    # it IS an int subclass in Python, so `horizon = true` would otherwise
+    # load as 1 and silently arm a one-version horizon.
+    horizon = raw.get('horizon', 0)
+    if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon < 0:
+        raise RoadmapUnavailable(
+            '%s: horizon must be a non-negative integer, got %r' % (path, horizon))
+
     # convention_start is OPTIONAL (not in REQUIRED_KEYS): an absent value
     # AND an empty string alike seed `today`, the same rule load_state uses
     # for its own convention_start default. This is deliberate, not an
@@ -198,6 +210,7 @@ def load_config(path=None, start=None, env=None, today=None):
             'release_namespace': raw['release_namespace'],
             'convention_start': started,
             'auto_label_prefixes': tuple(raw.get('auto_label_prefixes') or ()),
+            'horizon': horizon,
             # Where this config was loaded FROM, so the state file can default
             # beside it (github-kkq4a, I3). Deliberately NOT in CONFIG_KEYS:
             # that tuple validates the raw TOML, so a user who writes
@@ -235,6 +248,16 @@ def release_labels(issue):
     sibling product's namespace is still a yes. Counts use release_versions()
     instead, so a foreign release never inflates this board."""
     return [l for l in labels_of(issue) if version_of_label(l) is not None]
+
+
+def backlog_namespaces(issue):
+    return [m.group(1) for m in (_BACKLOG_RE.match(l) for l in labels_of(issue)) if m]
+
+
+def is_backlog(issue):
+    """Backlogged in ANY namespace -- the "has anyone triaged this?" test,
+    the same any-namespace rule release_labels() applies to "scheduled"."""
+    return bool(backlog_namespaces(issue))
 
 
 def release_versions(issue, cfg=None):
@@ -452,10 +475,26 @@ def build_model(open_issues, closed_issues, tags):
         (i for i in open_issues
          if i.get('issue_type') in ('feature', 'epic')
          and not release_labels(i)
+         and not is_backlog(i)
          and is_human_authored(i)
          and not is_deferred(i)),
         key=_rank)
 
+    # Every TYPE, unlike unscheduled: a parked task is still parked work, and
+    # the backlog is the pool a version is promoted from (github-18xti). Own
+    # namespace only, like every other count on this board. A row carrying a
+    # version as well is scheduled -- the version wins.
+    ns = (CONFIG or {}).get('release_namespace')
+    backlog = sorted(
+        (i for i in open_issues
+         if ns in backlog_namespaces(i)
+         and not release_labels(i)
+         and is_human_authored(i)
+         and not is_deferred(i)),
+        key=_rank)
+
+    # A backlog label does NOT exempt a row from the hotfix queue: severity
+    # outranks triage, and a parked P1 bug is still a live exposure.
     hotfix = sorted(
         (i for i in open_issues
          if is_hotfix(i) and not release_labels(i) and not is_deferred(i)),
@@ -463,6 +502,7 @@ def build_model(open_issues, closed_issues, tags):
 
     return {'cut': cut, 'no_tags': no_tags, 'in_flight': in_flight, 'planned': planned,
             'versions': versions, 'unscheduled': unscheduled,
+            'backlog': backlog,
             'hotfix': hotfix, 'throughput': {},
             'namespace_mismatch': _namespace_mismatch(open_issues, closed_issues)}
 
@@ -735,11 +775,19 @@ def evaluate(model, state, today, cfg=None):
                 ' in a release set.' % round(share * 100)]})
 
     # 4 -- unscheduled P0/P1 feature or epic
-    severe = [i for i in model['unscheduled'] if _prio(i) <= 1]
+    # A backlogged P0/P1 feature or epic counts too (github-18xti.2): the
+    # backlog label says "triaged, not now", and "not now" is exactly the
+    # wrong answer for something this severe.
+    parked = [i for i in model.get('backlog') or []
+              if i.get('issue_type') in ('feature', 'epic') and _prio(i) <= 1]
+    severe = sorted([i for i in model['unscheduled'] if _prio(i) <= 1] + parked,
+                    key=_rank)
     if severe:
+        parked_ids = {i['id'] for i in parked}
         lines = ['%d UNSCHEDULED P0/P1 -- a severe feature or epic with no version'
                  ' is a planning bug, not a backlog item.' % len(severe)]
-        lines += ['    P%d %-12s %s' % (_prio(i), i['id'], (i.get('title') or '')[:52])
+        lines += ['    P%d %-12s %s%s' % (_prio(i), i['id'], (i.get('title') or '')[:52],
+                                         '  (backlog)' if i['id'] in parked_ids else '')
                   for i in severe[:3]]
         out.append({'id': 4, 'bypass': True, 'lines': lines})
 
@@ -817,6 +865,25 @@ def evaluate(model, state, today, cfg=None):
         lines.append('  Cut a tag (e.g. `git tag v0.1.0`) for roadmap to tell'
                      ' shipped from planned.')
         out.append({'id': 8, 'bypass': True, 'lines': lines})
+
+    # 9 -- horizon short (github-18xti.2). `horizon` = how many minor versions,
+    # the in-flight one included, must carry work at all times. Opt-in: 0 or
+    # absent is off. An EMPTY horizon stays condition 1's job, so this only
+    # speaks once something is planned. Throttled, not bypass: a short horizon
+    # is a planning chore, not a state that must not be sat in -- the two
+    # severe states already have their own bypass conditions.
+    want = cfg.get('horizon') or 0
+    have = ([in_flight] if in_flight else []) + list(model.get('planned') or [])
+    if want and model.get('planned') and len(have) < want:
+        top = max(have)
+        nxt = (top[0], top[1] + 1, 0)
+        lines = ['HORIZON SHORT -- %d of %d versions carry work (%s).'
+                 % (len(have), want, ', '.join(_fmt_v(v) for v in have))]
+        lines.append('  Tag work for %s, from the backlog first. LABEL GOES LAST:'
+                     % _fmt_v(nxt))
+        lines.append('    bd label add <id> release:%s-%s'
+                     % (cfg['release_namespace'], _fmt_v(nxt)))
+        out.append({'id': 9, 'bypass': False, 'lines': lines})
 
     return sorted(out, key=lambda c: c['id'])
 
@@ -957,6 +1024,10 @@ def render_json(model, conditions, cfg=None):
         'unscheduled_count': len(model['unscheduled']),
         'unscheduled': [{'id': i['id'], 'priority': _prio(i),
                          'title': i.get('title') or ''} for i in model['unscheduled'][:20]],
+        'backlog_count': len(model.get('backlog') or []),
+        'backlog': [{'id': i['id'], 'priority': _prio(i),
+                     'title': i.get('title') or ''} for i in (model.get('backlog') or [])[:20]],
+        'horizon': cfg.get('horizon') or 0,
         'hotfix_count': len(model['hotfix']),
         'hotfix': [{'id': i['id'], 'priority': _prio(i),
                     'title': i.get('title') or ''} for i in model['hotfix']],
@@ -1008,6 +1079,8 @@ def render_board(model, conditions, cfg=None):
                         (i.get('title') or '')[:46]))
     if len(model['unscheduled']) > 3:
         lines.append('     …%d more · /roadmap unscheduled' % (len(model['unscheduled']) - 3))
+    lines.append('  BACKLOG  %d triaged, deliberately beyond the horizon · /roadmap backlog'
+                 % len(model.get('backlog') or []))
     lines.append('')
 
     lines.append('  THROUGHPUT    7d  %4d closed · %3d in a release set · %2d tags cut'
@@ -1231,7 +1304,7 @@ def plugin_version(root=None):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='roadmap', description='derived product roadmap over bd')
     ap.add_argument('target', nargs='?', default=None,
-                    help="'init', 'hotfix', 'unscheduled', 'plan', 'pin', "
+                    help="'init', 'hotfix', 'unscheduled', 'backlog', 'plan', 'pin', "
                          "'check', or a version like v0.17.0")
     ap.add_argument('version', nargs='?', default=None,
                     help='version for plan or pin')
@@ -1465,6 +1538,11 @@ def main(argv=None):
         return 0
     if args.target == 'hotfix':
         for i in model['hotfix']:
+            print('P%d %-9s %-14s %s' % (_prio(i), i.get('issue_type') or '',
+                                         i['id'], i.get('title') or ''))
+        return 0
+    if args.target == 'backlog':
+        for i in model['backlog']:
             print('P%d %-9s %-14s %s' % (_prio(i), i.get('issue_type') or '',
                                          i['id'], i.get('title') or ''))
         return 0

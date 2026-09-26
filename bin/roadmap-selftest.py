@@ -2673,6 +2673,114 @@ check('scan_tree: a tracked file in a git tree is still scanned',
 check('scan_tree: an untracked, unignored .github file is still scanned',
       any('.github' in h and 'new.yml' in h for h in _git_hits), True)
 
+
+# --- github-18xti.2: the backlog label and the N-version horizon -----------
+# `release:<ns>-backlog` means TRIAGED, deliberately beyond the horizon -- a
+# different fact from "nobody has looked at it". Before this, both states
+# rendered as UNSCHEDULED, so a board with 66 parked ideas and one with 66
+# forgotten ones were byte-identical.
+def backlogged(**kw):
+    kw.setdefault('labels', [])
+    kw['labels'] = list(kw['labels']) + ['release:acme-app-backlog']
+    return issue(**kw)
+
+
+check('is_backlog: own-namespace backlog label (must-hit)',
+      rm.is_backlog(backlogged(id='bl')), True)
+check('is_backlog: a foreign-namespace backlog still counts as triaged',
+      rm.is_backlog(issue(labels=['release:other-app-backlog'])), True)
+check('is_backlog: a versioned label is not backlog (must-miss)',
+      rm.is_backlog(tagged('v0.16.0')), False)
+check('is_backlog: a near-miss label is not backlog (must-miss)',
+      rm.is_backlog(issue(labels=['release:acme-app-backlogged'])), False)
+check('a backlog label is not a release version (never parsed as one)',
+      rm.release_labels(backlogged(id='bl')), [])
+
+BL_OPEN = [
+    tagged('v0.16.0', id='bl-inflight'),
+    backlogged(id='bl-feat', issue_type='feature', priority=2, title='parked idea'),
+    backlogged(id='bl-task', issue_type='task', priority=3, title='parked task'),
+    backlogged(id='bl-p1', issue_type='feature', priority=1, title='severe but parked'),
+    backlogged(id='bl-bug', issue_type='bug', priority=1, title='P1 bug parked'),
+    backlogged(id='bl-def', issue_type='feature', priority=2, status='deferred'),
+    issue(id='bl-foreign', issue_type='feature', labels=['release:other-app-backlog']),
+    issue(id='un-feat', issue_type='feature', priority=2, title='never triaged'),
+    backlogged(id='bl-noise', issue_type='feature', labels=['resource-watch']),
+]
+BL_M = rm.build_model(BL_OPEN, [], [(0, 15, 0)])
+_bl_uns = [i['id'] for i in BL_M['unscheduled']]
+check('unscheduled drops a backlogged feature', 'bl-feat' in _bl_uns, False)
+check('unscheduled drops a foreign-namespace backlogged feature', 'bl-foreign' in _bl_uns, False)
+check('unscheduled keeps the untriaged feature (control)', 'un-feat' in _bl_uns, True)
+_bl_ids = [i['id'] for i in BL_M['backlog']]
+check('backlog lists own-namespace rows of ANY type',
+      sorted(x for x in _bl_ids if x in ('bl-feat', 'bl-task')), ['bl-feat', 'bl-task'])
+check('backlog excludes a foreign namespace (counts are this board only)',
+      'bl-foreign' in _bl_ids, False)
+check('backlog excludes deferred rows', 'bl-def' in _bl_ids, False)
+check('backlog excludes auto-filed noise', 'bl-noise' in _bl_ids, False)
+# Severity outranks triage: a P1 bug labelled backlog is still a hotfix.
+check('a backlogged P1 bug stays in the hotfix queue',
+      'bl-bug' in [i['id'] for i in BL_M['hotfix']], True)
+# Condition 4 must still see a P0/P1 feature parked in the backlog -- parking
+# a severe item is the planning bug c4 exists to catch, not an exemption.
+_c4 = conds(BL_M, state()).get(4)
+check('c4 fires on a backlogged P1 feature',
+      bool(_c4) and any('bl-p1' in l for l in _c4['lines']), True)
+check('c4 marks the backlogged row as backlog',
+      bool(_c4) and any('bl-p1' in l and 'backlog' in l for l in _c4['lines']), True)
+_c4_quiet = conds(rm.build_model([tagged('v0.16.0', id='x'), tagged('v0.17.0', id='y'),
+                                  backlogged(id='bl-p2', issue_type='feature', priority=2)],
+                                 [], [(0, 15, 0)]), state()).get(4)
+check('c4 silent for a backlogged P2 feature (must-miss)', _c4_quiet, None)
+
+# Board + JSON carry the backlog count.
+_bl_board = rm.render_board(BL_M, [])
+check('board prints a BACKLOG line with its count',
+      'BACKLOG  %d' % len(BL_M['backlog']) in _bl_board, True)
+_bl_json = json.loads(rm.render_json(BL_M, []))
+check('json carries backlog_count', _bl_json.get('backlog_count'), len(BL_M['backlog']))
+check('json carries backlog rows',
+      [r['id'] for r in _bl_json.get('backlog', [])], _bl_ids[:20])
+
+# Condition 9: HORIZON SHORT. `horizon` counts the in-flight version plus the
+# planned minors. It is OFF by default (0) so an existing install sees no
+# change until it opts in.
+H_TWO = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b')],
+                       [], [(0, 15, 0)])
+H_THREE = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b'),
+                          tagged('v0.18.0', id='c')], [], [(0, 15, 0)])
+_saved_cfg = rm.CONFIG
+rm.configure(dict(_saved_cfg, horizon=3))
+_c9 = conds(H_TWO, state()).get(9)
+check('c9 fires when 2 of 3 horizon versions carry work (must-hit)', bool(_c9), True)
+check('c9 is throttled, not bypass', bool(_c9) and _c9['bypass'], False)
+check('c9 names the next version to tag',
+      bool(_c9) and any('release:acme-app-v0.18.0' in l for l in _c9['lines']), True)
+check('c9 lines say the label goes last',
+      bool(_c9) and any('LABEL GOES LAST' in l for l in _c9['lines']), True)
+check('c9 silent when the horizon is full (must-miss)', 9 in conds(H_THREE, state()), False)
+# An EMPTY horizon is condition 1's job; c9 must not double-report it.
+check('c9 defers to c1 on an empty horizon', 9 in conds(C1_EMPTY, state()), False)
+check('c1 still fires there (control)', 1 in conds(C1_EMPTY, state()), True)
+# A PATCH is not a horizon version -- v0.16.1 must not fill a slot.
+H_PATCH = rm.build_model([tagged('v0.16.0', id='a'), tagged('v0.17.0', id='b'),
+                          tagged('v0.16.1', id='p')], [], [(0, 15, 0)])
+check('a patch version does not fill a horizon slot', 9 in conds(H_PATCH, state()), True)
+rm.configure(dict(_saved_cfg, horizon=0))
+check('c9 off when horizon = 0', 9 in conds(H_TWO, state()), False)
+rm.configure({k: v for k, v in _saved_cfg.items() if k != 'horizon'})
+check('c9 off when horizon is absent (default)', 9 in conds(H_TWO, state()), False)
+rm.configure(_saved_cfg)
+
+_hd, _hp = write_cfg(GOOD + 'horizon = 3\n')
+check('horizon loads as an int', rm.load_config(_hp)['horizon'], 3)
+_hd, _hp = write_cfg(GOOD)
+check('horizon defaults to 0', rm.load_config(_hp)['horizon'], 0)
+check_type_rejected('horizon wrong type (string)', GOOD + 'horizon = "3"\n', 'horizon')
+check_type_rejected('horizon wrong type (bool)', GOOD + 'horizon = true\n', 'horizon')
+check_type_rejected('horizon negative', GOOD + 'horizon = -1\n', 'horizon')
+
 if FAILURES:
     print('FAIL (%d)' % len(FAILURES))
     for f in FAILURES:

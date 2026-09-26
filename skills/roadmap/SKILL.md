@@ -16,7 +16,9 @@ file moved in 0.2.0; see the README's "Upgrading from 0.1.x".
 
 - `roadmap` — the board
 - `roadmap hotfix` — the full severity queue
-- `roadmap unscheduled` — everything with no version
+- `roadmap unscheduled` — everything with no version and no backlog label
+- `roadmap backlog` — triaged work parked beyond the horizon
+  (`release:<namespace>-backlog`); promote by swapping the label for a version
 - `roadmap plan` (or `plan v1.2.0`) — proposes what
   should go in a version
 - `roadmap v1.2.0` — one version in detail

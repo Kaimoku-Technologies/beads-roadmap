@@ -48,3 +48,11 @@ convention_start = "2026-09-21"
 # one-character-prefix filter -- which matches almost everything and
 # quietly deletes most of the board.
 auto_label_prefixes = []
+
+# Optional, default 0 (off). How many minor versions -- the in-flight one
+# included -- must carry work at all times. With horizon = 3 and only the
+# in-flight version plus one planned minor tagged, the board and the
+# session-start check report HORIZON SHORT and name the next minor to tag.
+# Patch versions never count. Work parked beyond the horizon carries
+# release:<namespace>-backlog, which is where promotion starts.
+# horizon = 3

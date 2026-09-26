@@ -14,7 +14,9 @@ Run the roadmap board and report it.
   file by hand in that case.
 - `hotfix` → `roadmap hotfix` (full severity queue)
 - `unscheduled` → `roadmap unscheduled` (everything
-  with no version)
+  with no version and no backlog label: untriaged)
+- `backlog` → `roadmap backlog` (everything labelled
+  `release:<namespace>-backlog`: triaged, parked beyond the horizon)
 - `plan` → `roadmap plan` (or `plan v1.2.0`) —
   proposes what should go in a version, drawn from the unversioned work
   descending from that version's gating epics, ranked, capped at 7 with the
