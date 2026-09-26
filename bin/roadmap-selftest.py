@@ -980,6 +980,21 @@ parsed_baselined = json.loads(rm.render_json(BOARD_MODEL_BASELINED_JSON, BOARD_C
 check('json baseline present when measured', parsed_baselined.get('baseline'),
       ['f-business', 'b-cred', 't-dns'])
 
+# github-zfxhi: --json is the scripting surface, so its lists are COMPLETE.
+# It used to slice unscheduled and backlog to 20 rows while *_count held the
+# true total, and a triage that iterated the array saw 20 of 67. Sizes sit
+# above the old cap on purpose: at <=20 rows this passes with or without it.
+BIG_JSON = dict(BOARD_MODEL)
+BIG_JSON['unscheduled'] = [{'id': 'u-%d' % n, 'priority': 2, 'title': 't'} for n in range(25)]
+BIG_JSON['backlog'] = [{'id': 'b-%d' % n, 'priority': 3, 'title': 't'} for n in range(23)]
+parsed_big = json.loads(rm.render_json(BIG_JSON, BOARD_CONDS))
+check('json unscheduled lists every row, not a prefix',
+      len(parsed_big['unscheduled']), parsed_big['unscheduled_count'])
+check('json unscheduled keeps the 25th row', parsed_big['unscheduled'][-1]['id'], 'u-24')
+check('json backlog lists every row, not a prefix',
+      len(parsed_big['backlog']), parsed_big['backlog_count'])
+check('json backlog count is the model size', parsed_big['backlog_count'], 23)
+
 board = rm.render_board(BOARD_MODEL, BOARD_CONDS)
 check('board names the cut version', 'cut v0.15.0' in board, True)
 check('board shows the hotfix queue', 'HOTFIX QUEUE' in board, True)

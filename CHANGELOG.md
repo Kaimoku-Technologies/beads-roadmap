@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--json` lists every unscheduled and backlog row.** Both arrays were cut
+  to their first 20 rows while `unscheduled_count` and `backlog_count` held
+  the full totals, so a script that walked the array quietly missed the rest
+  (a triage saw 20 of 67). The counts and the arrays now always agree. The
+  SessionStart hook never read these arrays, so its output is unchanged.
+
 ## [0.5.0] — 2026-09-26
 
 ### Added
