@@ -521,6 +521,17 @@ def is_owned(issue, byid, cfg=None):
 def build_model(open_issues, closed_issues, tags):
     cut = tags[0] if tags else None
 
+    # Ownership (github-bjxle). Only a board that opted in with `scoped`
+    # filters anything; a board without the key is the CATCH-ALL on a shared
+    # database and renders exactly as before, so an unowned P0 bug is always
+    # visible on at least one board. Counts, backlog and plan are untouched --
+    # they are already namespace-filtered or ancestry-walked.
+    scoped = bool((CONFIG or {}).get('scoped'))
+    byid = ownership_index(open_issues, closed_issues) if scoped else None
+
+    def owned(i):
+        return (not scoped) or is_owned(i, byid)
+
     versioned_open = [i for i in open_issues if release_versions(i)]
     versioned_closed = [i for i in closed_issues if release_versions(i)]
 
@@ -572,7 +583,8 @@ def build_model(open_issues, closed_issues, tags):
          and not release_labels(i)
          and not is_backlog(i)
          and is_human_authored(i)
-         and not is_deferred(i)),
+         and not is_deferred(i)
+         and owned(i)),
         key=_rank)
 
     # Every TYPE, unlike unscheduled: a parked task is still parked work, and
@@ -589,16 +601,19 @@ def build_model(open_issues, closed_issues, tags):
         key=_rank)
 
     # A backlog label does NOT exempt a row from the hotfix queue: severity
-    # outranks triage, and a parked P1 bug is still a live exposure.
+    # outranks triage, and a parked P1 bug is still a live exposure. On a
+    # scoped board the queue holds only OWNED rows; the unscoped (catch-all)
+    # board still holds every unversioned one.
     hotfix = sorted(
         (i for i in open_issues
-         if is_hotfix(i) and not release_labels(i) and not is_deferred(i)),
+         if is_hotfix(i) and not release_labels(i) and not is_deferred(i) and owned(i)),
         key=_rank)
 
     return {'cut': cut, 'no_tags': no_tags, 'in_flight': in_flight, 'planned': planned,
             'versions': versions, 'unscheduled': unscheduled,
             'backlog': backlog,
             'hotfix': hotfix, 'throughput': {},
+            'scoped': scoped,
             'namespace_mismatch': _namespace_mismatch(open_issues, closed_issues)}
 
 

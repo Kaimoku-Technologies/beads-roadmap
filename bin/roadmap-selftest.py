@@ -2953,6 +2953,48 @@ check('claims off: title row is no longer owned', _owned('by-title', ANCESTRY_ON
 check('claims off: id-prefix row is no longer owned', _owned('acme-77', ANCESTRY_ONLY_CFG), False)
 check('claims off: ancestry row still owned (control)', _owned('own-child', ANCESTRY_ONLY_CFG), True)
 
+# build_model under a scoped config vs the SAME fixture under TEST_CFG. The
+# unscoped arm is today's behaviour and is the catch-all's job: it must keep
+# listing exactly the rows the scoped arm drops.
+_saved_cfg = rm.CONFIG
+rm.configure(SCOPED_CFG)
+SC_M = rm.build_model(OWN_OPEN, OWN_CLOSED, [(0, 15, 0)])
+rm.configure(_saved_cfg)
+UN_M = rm.build_model(OWN_OPEN, OWN_CLOSED, [(0, 15, 0)])
+_sc_uns = [i['id'] for i in SC_M['unscheduled']]
+_un_uns = [i['id'] for i in UN_M['unscheduled']]
+_sc_hot = [i['id'] for i in SC_M['hotfix']]
+_un_hot = [i['id'] for i in UN_M['hotfix']]
+
+check('scoped unscheduled keeps every owned row (must-hit)',
+      sorted(set(_sc_uns) & {'own-child', 'own-epic.7', 'grand', 'old-child', 'by-title', 'acme-77'}),
+      ['acme-77', 'by-title', 'grand', 'old-child', 'own-child', 'own-epic.7'])
+check('scoped unscheduled drops the orphan (must-miss)', 'orphan' in _sc_uns, False)
+check('scoped unscheduled drops a foreign epic\'s child', 'other-child' in _sc_uns, False)
+check('scoped unscheduled drops a row whose nearest labelled ancestor is foreign',
+      'sub-foreign-child' in _sc_uns, False)
+check('unscoped unscheduled still lists the orphan (control: today\'s behaviour)',
+      'orphan' in _un_uns, True)
+check('unscoped unscheduled still lists the foreign epic\'s child (control)',
+      'other-child' in _un_uns, True)
+
+check('scoped hotfix keeps an owned P1 bug (must-hit)', 'own-p1' in _sc_hot, True)
+check('scoped hotfix keeps an own-namespace backlogged security row (must-hit)',
+      'own-bl' in _sc_hot, True)
+check('scoped hotfix drops a foreign backlogged security row (the github-5yqbl shape)',
+      'foreign-bl' in _sc_hot, False)
+check('scoped hotfix drops an UNOWNED P1 bug -- the catch-all board shows it',
+      'orphan-p1' in _sc_hot, False)
+check('unscoped hotfix lists the unowned P1 bug (control)', 'orphan-p1' in _un_hot, True)
+check('unscoped hotfix lists the foreign backlogged row (control)', 'foreign-bl' in _un_hot, True)
+
+check('scoping leaves the versions map alone',
+      sorted(SC_M['versions']), sorted(UN_M['versions']))
+check('scoping leaves the backlog alone',
+      [i['id'] for i in SC_M['backlog']], [i['id'] for i in UN_M['backlog']])
+check('model records scoped = True', SC_M.get('scoped'), True)
+check('model records scoped = False under a config with no key', UN_M.get('scoped'), False)
+
 if FAILURES:
     print('FAIL (%d)' % len(FAILURES))
     for f in FAILURES:
