@@ -540,9 +540,10 @@ JSON keys, no removed or renamed surface.
 
 ## Open questions
 
-1. **Does `bd list --json` tolerate N+1 concurrent readers on one database?** Not
-   verifiable from this tree (the binary shells out to `bd`, `bin/roadmap:363-385`, and bd's
-   own concurrency is outside it). If a reader fails under contention the board is reported
-   `unavailable`, never silent, so the failure is visible; the live verification at the cut
-   is where this is measured, and the fallback is a `max_workers` cap, which is a one-line
-   change rather than a design change.
+None open.
+
+Resolved 2026-10-14: **does `bd list --json` tolerate N+1 concurrent readers on one
+database?** Measured on the reference workspace: five parallel `bd list -n 0 --status open
+--json` readers all exited 0 with identical row counts (1131) and empty stderr. If a reader
+ever fails under contention the board is reported `unavailable`, never silent; the fallback
+is a `max_workers` cap, a one-line change rather than a design change.
