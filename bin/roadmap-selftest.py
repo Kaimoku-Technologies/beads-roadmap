@@ -2884,6 +2884,75 @@ check_type_rejected('claims without scoped = true are refused',
 check_type_rejected('claims with scoped = false are refused',
                     GOOD + 'scoped = false\nclaim_id_prefixes = ["acme-"]\n', 'scoped is not true')
 
+# --- github-bjxle: who OWNS an unlabelled row -------------------------------
+# bd rows carry no repo field. On a shared database an unlabelled row is owned
+# by this namespace when (1) it carries this namespace's release/backlog label,
+# (2) its NEAREST labelled ancestor does, or (3) a configured title/id prefix
+# claims it. Two namespaces: acme-app (ours) and other-app (foreign).
+OWN_OPEN = [
+    tagged('v0.18.0', id='own-epic', issue_type='epic', priority=2, title='acme epic'),
+    issue(id='own-child', issue_type='feature', parent='own-epic', title='child of acme epic'),
+    issue(id='own-epic.7', issue_type='feature', title='dotted child, no parent field'),
+    issue(id='mid', issue_type='task', parent='own-epic', title='unlabelled middle row'),
+    issue(id='grand', issue_type='feature', parent='mid', title='two hops to acme epic'),
+    issue(id='old-child', issue_type='feature', parent='old-epic', title='child of a CLOSED acme epic'),
+    issue(id='by-title', issue_type='feature', title='acme-app: claimed by title'),
+    issue(id='acme-77', issue_type='feature', title='claimed by id prefix'),
+    issue(id='own-bl', issue_type='feature', priority=2,
+          labels=['security', 'release:acme-app-backlog'], title='own backlog security row'),
+    issue(id='own-p1', issue_type='bug', priority=1, parent='own-epic', title='P1 bug under acme epic'),
+    issue(id='other-epic', issue_type='epic', labels=['release:other-app-v1.0.0'], title='foreign epic'),
+    issue(id='other-child', issue_type='feature', parent='other-epic', title='child of foreign epic'),
+    issue(id='sub-foreign', issue_type='epic', parent='own-epic',
+          labels=['release:other-app-backlog'], title='foreign sub-epic under acme epic'),
+    issue(id='sub-foreign-child', issue_type='feature', parent='sub-foreign',
+          title='nearest labelled ancestor is foreign'),
+    issue(id='orphan', issue_type='feature', title='bin/tool: nobody claims this'),
+    issue(id='orphan-p1', issue_type='bug', priority=1, title='unlabelled P1 bug, no parent'),
+    # the github-5yqbl shape: P2 security FEATURE, foreign backlog label, no parent
+    issue(id='foreign-bl', issue_type='feature', priority=2,
+          labels=['security', 'release:other-app-backlog'], title='foreign backlog security row'),
+]
+OWN_CLOSED = [tagged('v0.15.0', id='old-epic', issue_type='epic', status='closed',
+                     title='closed acme epic')]
+OWN_IDX = rm.ownership_index(OWN_OPEN, OWN_CLOSED)
+SCOPED_CFG = dict(TEST_CFG, scoped=True, claim_title_prefixes=('acme-app:',),
+                  claim_id_prefixes=('acme-',))
+ANCESTRY_ONLY_CFG = dict(TEST_CFG, scoped=True)
+
+
+def _owned(iid, cfg=SCOPED_CFG):
+    return rm.is_owned(OWN_IDX[iid], OWN_IDX, cfg)
+
+
+check('_parent_id: parent field wins', rm._parent_id('x.1', {'parent': 'p'}), 'p')
+check('_parent_id: dotted fallback when parent absent', rm._parent_id('own-epic.7', {}), 'own-epic')
+check('_parent_id: works on a bare id with no row', rm._parent_id('a.b.c', None), 'a.b')
+check('_parent_id: a flat id has no parent', rm._parent_id('github-abc', None), None)
+
+check('owned: child via parent (must-hit)', _owned('own-child'), True)
+check('owned: dotted child with no parent field (must-hit)', _owned('own-epic.7'), True)
+check('owned: two hops through an unlabelled middle row (must-hit)', _owned('grand'), True)
+check('owned: child of a CLOSED labelled epic (must-hit)', _owned('old-child'), True)
+check('owned: own-namespace backlog label, zero hops (must-hit)', _owned('own-bl'), True)
+check('owned: title claim (must-hit)', _owned('by-title'), True)
+check('owned: id-prefix claim (must-hit)', _owned('acme-77'), True)
+check('not owned: child of a foreign epic (must-miss)', _owned('other-child'), False)
+check('not owned: NEAREST labelled ancestor is foreign, even under an own epic (must-miss)',
+      _owned('sub-foreign-child'), False)
+check('not owned: orphan (must-miss)', _owned('orphan'), False)
+check('not owned: foreign backlog security row -- the github-5yqbl shape (must-miss)',
+      _owned('foreign-bl'), False)
+check('owner_namespaces: nearest foreign ancestor reported',
+      rm.owner_namespaces(OWN_IDX['sub-foreign-child'], OWN_IDX), {'other-app'})
+check('owner_namespaces: orphan has none', rm.owner_namespaces(OWN_IDX['orphan'], OWN_IDX), set())
+# Which ARM matched: with no claims configured the title/id rows become misses
+# while ancestry still hits. Without this, a bug that owned everything would
+# pass every must-hit above.
+check('claims off: title row is no longer owned', _owned('by-title', ANCESTRY_ONLY_CFG), False)
+check('claims off: id-prefix row is no longer owned', _owned('acme-77', ANCESTRY_ONLY_CFG), False)
+check('claims off: ancestry row still owned (control)', _owned('own-child', ANCESTRY_ONLY_CFG), True)
+
 if FAILURES:
     print('FAIL (%d)' % len(FAILURES))
     for f in FAILURES:

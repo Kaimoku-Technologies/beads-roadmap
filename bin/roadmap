@@ -454,6 +454,70 @@ def is_deferred(issue):
     return issue.get('status') == 'deferred'
 
 
+def ownership_index(open_issues, closed_issues):
+    """id -> row over BOTH reads (github-bjxle). Ownership walks through
+    CLOSED epics: a shipped epic's unlabelled children are still its
+    product's, and a closed child's ancestor may itself be closed."""
+    return {i['id']: i for i in open_issues + closed_issues if i.get('id')}
+
+
+def _parent_id(iid, row):
+    """bd's `parent`, else the dotted parent of the id itself -- the two
+    encodings descends_from() unions (0 disagreements, 4 dotted-without-parent
+    rows measured 2026-10-14). Works on a bare id when the row is missing, so
+    a gap in the chain does not end the walk."""
+    p = (row or {}).get('parent')
+    if p:
+        return p
+    return iid.rsplit('.', 1)[0] if '.' in iid else None
+
+
+def _label_namespaces(issue):
+    """Namespaces of every release AND backlog label on the row."""
+    out = set()
+    for l in labels_of(issue):
+        parsed = version_of_label(l)
+        if parsed:
+            out.add(parsed[0])
+    out.update(backlog_namespaces(issue))
+    return out
+
+
+def owner_namespaces(issue, byid):
+    """The row's own label namespaces, else those of the NEAREST ancestor
+    carrying any, else an empty set (github-bjxle). Nearest wins so a
+    sub-epic relabelled to another product takes its subtree with it."""
+    own = _label_namespaces(issue)
+    if own:
+        return own
+    seen = set()
+    cur = _parent_id(issue.get('id') or '', issue)
+    while cur and cur not in seen:
+        seen.add(cur)
+        row = byid.get(cur)
+        if row:
+            ns = _label_namespaces(row)
+            if ns:
+                return ns
+        cur = _parent_id(cur, row)
+    return set()
+
+
+def is_owned(issue, byid, cfg=None):
+    """Does THIS board own an unlabelled row? Own/ancestor label in the
+    configured namespace, or a configured title/id prefix (github-bjxle).
+    Consulted only when cfg['scoped'] -- see build_model. Tuples, never a
+    str: str.startswith() decomposes a str into one-character prefixes."""
+    cfg = cfg or CONFIG
+    if cfg['release_namespace'] in owner_namespaces(issue, byid):
+        return True
+    title_prefixes = tuple(cfg.get('claim_title_prefixes') or ())
+    if title_prefixes and (issue.get('title') or '').startswith(title_prefixes):
+        return True
+    id_prefixes = tuple(cfg.get('claim_id_prefixes') or ())
+    return bool(id_prefixes) and (issue.get('id') or '').startswith(id_prefixes)
+
+
 def build_model(open_issues, closed_issues, tags):
     cut = tags[0] if tags else None
 
