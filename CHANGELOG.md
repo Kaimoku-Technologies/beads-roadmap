@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Scoped boards for a shared `bd` database: `scoped = true`, `claim_title_prefixes`,
+  `claim_id_prefixes` in `roadmap.toml`.** A scoped board lists only the hotfix and
+  unscheduled rows it owns — rows labelled for its namespace, rows whose nearest
+  labelled ancestor epic is, and rows matched by the claim prefixes — and counts
+  only its own closes in THROUGHPUT. Its header ends in `· scoped` and `--json`
+  carries `scoped`. A board without the key is unchanged and acts as the catch-all,
+  so an unowned severe row is always visible on one board. Keys are validated by
+  name; an older `roadmap` refuses them.
+
 ### Changed
 
 - **IN FLIGHT and PLANNED rows show the issue id**, in the same column order
@@ -23,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   baseline issues have since closed or moved out of the version, the header
   says how many (`+3 added, 2 since closed or moved out`), which is why
   "now" minus "was" can differ from the added count.
+- **On a shared `bd` database, every board showed every other product's unlabelled
+  work and a false OFF-PLAN.** The hotfix queue and unscheduled list had no
+  ownership test, and throughput's denominator counted every close in the database
+  while its numerator counted only this product's (0.2.0, M9), so three boards
+  reported 5–8% on-plan shares that were really 59–100%. Fixed for boards that opt
+  in with `scoped = true`; single-product boards render exactly as before.
 
 ## [0.6.0] — 2026-10-14
 

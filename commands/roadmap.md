@@ -12,9 +12,10 @@ Run the roadmap board and report it.
   nothing, only on a genuinely ambiguous layout — no `.git`, or release labels
   that are absent from the board or span more than one namespace; write the
   file by hand in that case.
-- `hotfix` → `roadmap hotfix` (full severity queue)
+- `hotfix` → `roadmap hotfix` (full severity queue; on a scoped board, this product's rows)
 - `unscheduled` → `roadmap unscheduled` (everything
-  with no version and no backlog label: untriaged)
+  with no version and no backlog label: untriaged; on a scoped board,
+  this product's rows)
 - `backlog` → `roadmap backlog` (everything labelled
   `release:<namespace>-backlog`: triaged, parked beyond the horizon)
 - `plan` → `roadmap plan` (or `plan v1.2.0`) —

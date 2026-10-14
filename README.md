@@ -96,6 +96,12 @@ first:
    version plus the planned minors to number at least N. When fewer carry
    work, the board and the session-start check report `HORIZON SHORT` and
    name the next minor to tag. Off (0) by default.
+8. **Optional: `scoped = true` in `roadmap.toml`, when several products
+   share one `bd` board.** The board then lists only the hotfix and
+   unscheduled rows this product *owns* and counts only its own closes.
+   Leave exactly one board per shared `bd` database unscoped: it is the
+   catch-all that shows every unlabelled row. See
+   [Several products, one `bd` board](#several-products-one-bd-board).
 
 You also need **Python 3.11 or newer** (standard library only) and `bd` on
 your `PATH`. See [Requirements](#requirements) for the details.
@@ -113,6 +119,9 @@ your `PATH`. See [Requirements](#requirements) for the details.
 | **unscheduled** | Features and epics with no release label: nobody has decided when they ship. |
 | **backlog** | Work labelled `release:<namespace>-backlog`: triaged, and deliberately parked beyond the planning horizon. |
 | **scope creep** | Issues added to the in-flight version after it went in flight, compared against a baseline snapshot. |
+| **owned** | An unlabelled row this board claims: it carries this namespace's release or backlog label, its nearest labelled ancestor epic does, or a configured title/id prefix matches. |
+| **scoped board** | A board with `scoped = true`: hotfix queue, unscheduled list and throughput cover owned rows only. Its header ends in `· scoped`. |
+| **catch-all board** | A board without `scoped`: shows every unlabelled row, as a single-product board always has. Keep exactly one per shared `bd` database. |
 | **drift** | Any of nine planning problems (see [DESIGN.md](docs/DESIGN.md)) that the session-start check reports. |
 
 ## Install
@@ -250,16 +259,20 @@ Using the [example above](#what-it-looks-like):
   priority 0–2, that carry **no** release label. The patch version shown
   (the in-flight version's next patch) is implied, not planned: cut it
   whenever one fix is ready, without waiting for the in-flight version.
+  On a scoped board, only rows this product owns; the catch-all board has
+  the rest.
 - **PLANNED** is every later minor or major version that has at least one
   labelled issue. Only its features are listed; the rest are counted in
   `…N more`. Run `/roadmap <version>` to see all of them.
 - **UNSCHEDULED** is features and epics with no release label. Tasks with no
-  version are not roadmap lines and are left out.
+  version are not roadmap lines and are left out. On a scoped board, only
+  rows this product owns; the catch-all board has the rest.
 - **THROUGHPUT** looks backward, never forward. It shows how many issues
   closed, how many of those were in a release, and how many tags were cut
   over the last 7 and 28 days. It also shows the in-flight version's open
   count for each of the last six days. `creep` compares the in-flight
   version's current issues with the baseline taken when it went in flight.
+  On a scoped board `closed` counts only this product's closes.
 - **Drift conditions**, when any apply, print last. Each names the problem
   and the command that fixes it. See [`docs/DESIGN.md`](docs/DESIGN.md) for
   all nine.
@@ -313,7 +326,8 @@ SessionStart hook reads this form. If `roadmap` can't read the board (no
 config, `bd` missing, Python too old), it prints `roadmap: unavailable: …` on
 stderr, puts the reason under an `unavailable` key in JSON, and **still exits
 0** so it can never break a session. Check for that key rather than trusting
-the exit code.
+the exit code. `--json` also carries `"scoped"`, true when the board is
+scoped.
 
 **Check which version you're running.** `roadmap --version` prints something
 like `roadmap 0.2.1 (/path/to/bin/roadmap)`. It works without a
@@ -325,6 +339,47 @@ differ from the installed copy. To pick up a new release, see
 Other flags: `--today YYYY-MM-DD` renders the board as of another date (for
 the day-count windows and warm-up), `--state PATH` uses a different state
 file, and `init --force` overwrites an existing `roadmap.toml`.
+
+### Several products, one `bd` board
+
+When several products keep their issues in one `bd` database, each with its
+own `roadmap.toml` and namespace, an issue with no release label belongs to
+no product in particular. Without scoping, every board lists every other
+product's untriaged features and urgent bugs, and the THROUGHPUT on-plan
+share collapses, because it divides this product's release work by every
+close in the database. A board that opts in shows only what it owns:
+
+```toml
+# Optional. On a bd board shared by several products, show only the rows this
+# product OWNS: rows labelled for this namespace, rows whose nearest labelled
+# ancestor epic is, and rows matched by the claim lists below. Leave it unset
+# on exactly one board per shared board -- that board is the catch-all and
+# shows every unlabelled row, so an unowned P0 bug is always visible somewhere.
+scoped = true
+claim_title_prefixes = ["acme-app:"]     # literal, case-sensitive title prefixes
+claim_id_prefixes = ["acme-"]            # literal id prefixes; include the separator
+```
+
+A row is owned when any of these holds:
+
+- it carries `release:<namespace>-v*` or `release:<namespace>-backlog` itself;
+- its **nearest** ancestor that carries any release or backlog label carries
+  one for this namespace (through `parent` or a dotted id, open or closed);
+- its title or id starts with one of the configured claim prefixes.
+
+The scoping applies to the hotfix queue, the unscheduled list and THROUGHPUT's
+`closed` count. Version counts, the backlog and `plan` were already limited to
+your namespace and do not change. A scoped board's header ends in `· scoped`.
+
+**Leave exactly one board unscoped**, normally the product the database was
+created for. It is the catch-all: an unowned priority-0 bug is always on that
+board and in its session-start check. **If every board is scoped, an unowned
+row appears on no board, and the tool cannot detect that** from one
+`roadmap.toml`, since it reads only its own config.
+
+A `roadmap` older than 0.7.0 refuses these keys by name and prints
+`roadmap: unavailable: … unknown key(s): scoped`, so the board goes silent.
+Update the install before adding them.
 
 ### The SessionStart hook
 

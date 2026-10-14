@@ -146,3 +146,46 @@ applies even before the config loader runs: a version check ahead of
 required version and the running interpreter's path, then exits 0 — instead
 of an uncaught `ModuleNotFoundError` traceback exiting 1, which the hook's
 non-zero-exit fail-open swallows into silence with no way to diagnose it.
+
+## Several products, one board
+
+A `bd` database can hold several products, each rendering its own board from
+its own `roadmap.toml` and namespace. Release-labelled rows already separate
+cleanly, but a row with no release label carries nothing that says whose it
+is: `bd` has no repo field, and ids such as `github-*` are shared by every
+product. Left alone, every board lists every product's unlabelled features
+and urgent bugs, and THROUGHPUT divides this product's release work by every
+close in the database (github-bjxle).
+
+Ownership is **derived at render time**, like everything else here; nothing is
+written to `bd`. A row is owned by namespace `N` when, checked in order:
+
+1. it carries `release:N-v*` or `release:N-backlog` itself;
+2. its **nearest** labelled ancestor, walking up through `parent` and falling
+   back to the dotted parent of the id, carries a label in `N`. Nearest wins
+   so a sub-epic relabelled to another product takes its subtree with it. The
+   walk runs through **closed** rows too, because a shipped epic's unlabelled
+   children are still its product's;
+3. its title or id starts with a configured `claim_title_prefixes` /
+   `claim_id_prefixes` entry (literal, case-sensitive).
+
+**Opt-in, never derived.** Ownership is consulted only when `roadmap.toml` says
+`scoped = true`. Deriving "scoped" from "this database carries more than one
+namespace" would change the output of every mixed workspace on upgrade, and
+the single-product render would stop being byte-identical. Deriving the title
+prefix from the namespace is wrong on exactly the boards where it matters: a
+product's issues are often titled with a repo or product name that is not its
+release namespace. A guessed config value renders a clean, wrong board, so
+both are written by hand. `roadmap init` never writes them; it already refuses
+a multi-namespace board and routes that user to a hand-written config.
+
+**The catch-all.** A board without `scoped` shows every unlabelled row, as
+before. On a shared database exactly one board should stay unscoped, so an
+unowned priority-0 bug always appears on that board and in its session-start
+check. If every board is scoped, an unowned row is on none of them, and one
+config cannot detect it: a scoped board cannot tell "owned by nobody" from
+"owned by the catch-all by convention", so a count of "rows not mine" would
+reintroduce the very leak this fixes, in count form. The constraint is
+documented and scoped boards are marked visibly (header `· scoped`, JSON
+`scoped: true`). Detection belongs with the multi-product hook work
+(github-7jn0v), the first thing that would read more than one `roadmap.toml`.

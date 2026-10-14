@@ -56,3 +56,12 @@ auto_label_prefixes = []
 # Patch versions never count. Work parked beyond the horizon carries
 # release:<namespace>-backlog, which is where promotion starts.
 # horizon = 3
+
+# Optional. On a bd board shared by several products, show only the rows this
+# product OWNS: rows labelled for this namespace, rows whose nearest labelled
+# ancestor epic is, and rows matched by the claim lists below. Leave it unset
+# on exactly one board per shared board -- that board is the catch-all and
+# shows every unlabelled row, so an unowned P0 bug is always visible somewhere.
+# scoped = true
+# claim_title_prefixes = ["acme-app:"]     # literal, case-sensitive title prefixes
+# claim_id_prefixes = ["acme-"]            # literal id prefixes; include the separator
