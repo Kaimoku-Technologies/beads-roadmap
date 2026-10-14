@@ -1058,7 +1058,12 @@ def compute_throughput(open_issues, closed_issues, tag_dates, today, in_flight,
     on-plan share, and it produced an unsurfaced tell -- ">0 in a release set"
     printed beside `versions: {}`. Filtering drives those counts to 0 in the
     mismatch case, where condition 7 then fires with a named diagnosis instead
-    of a number the reader has to interpret."""
+    of a number the reader has to interpret.
+
+    On a scoped board (github-bjxle) `human` is further limited to closes this
+    board OWNS -- is_owned(): own label, nearest labelled ancestor, configured
+    claim -- so closed_*d and on_plan_share_14d measure this product. The
+    unscoped board is the catch-all and keeps counting every human close."""
     cfg = cfg or CONFIG
     if convention_start is None:
         convention_start = cfg['convention_start'] if cfg else datetime.date.today().isoformat()
@@ -1066,7 +1071,13 @@ def compute_throughput(open_issues, closed_issues, tag_dates, today, in_flight,
         d = datetime.date.fromisoformat(today) - datetime.timedelta(days=days)
         return d.isoformat()
 
-    human = [i for i in closed_issues if is_human_authored(i, cfg)]
+    # On a scoped board the denominator follows ownership (github-bjxle):
+    # M9 scoped the numerator, and a scoped numerator over an unscoped
+    # denominator collapsed the on-plan share on every shared-database board.
+    scoped = bool((cfg or {}).get('scoped'))
+    byid = ownership_index(open_issues, closed_issues) if scoped else None
+    human = [i for i in closed_issues
+             if is_human_authored(i, cfg) and (not scoped or is_owned(i, byid, cfg))]
     out = {}
     for days in (7, 28):
         cut = since(days)

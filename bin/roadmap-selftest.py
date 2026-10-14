@@ -2995,6 +2995,28 @@ check('scoping leaves the backlog alone',
 check('model records scoped = True', SC_M.get('scoped'), True)
 check('model records scoped = False under a config with no key', UN_M.get('scoped'), False)
 
+# Throughput: the DENOMINATOR follows ownership on a scoped board. The
+# numerator was scoped by github-kkq4a M9; leaving the denominator unscoped
+# collapsed the on-plan share on every shared-database board (measured 5%, 7%
+# and 8% false OFF-PLAN on three boards, 2026-10-14).
+TP_SC_CLOSED = OWN_CLOSED + [            # old-epic: own label, closed 2026-09-21
+    closed_at('2026-09-20', id='c-own', labels=['release:acme-app-v0.15.0']),
+    closed_at('2026-09-20', id='c-anc', parent='old-epic'),           # unlabelled child of a CLOSED own epic
+    closed_at('2026-09-20', id='c-title', title='acme-app: closed by title'),
+    closed_at('2026-09-20', id='c-foreign', labels=['release:other-app-v1.0.0']),
+    closed_at('2026-09-20', id='c-orphan', title='nobody\'s close'),
+]
+TP_SC = rm.compute_throughput([], TP_SC_CLOSED, [], '2026-09-21', None,
+                              convention_start='2026-09-01', cfg=SCOPED_CFG)
+TP_UN = rm.compute_throughput([], TP_SC_CLOSED, [], '2026-09-21', None,
+                              convention_start='2026-09-01', cfg=TEST_CFG)
+check('scoped closed_7d counts only owned closes (must-miss on foreign and orphan)',
+      TP_SC['closed_7d'], 4)
+check('unscoped closed_7d counts every human close (control)', TP_UN['closed_7d'], 6)
+check('in_release_7d is unchanged by scoping', (TP_SC['in_release_7d'], TP_UN['in_release_7d']), (2, 2))
+check('scoped on-plan share is 2 of 4', TP_SC['on_plan_share_14d'], 0.5)
+check('unscoped on-plan share is 2 of 6 (control)', round(TP_UN['on_plan_share_14d'], 3), 0.333)
+
 if FAILURES:
     print('FAIL (%d)' % len(FAILURES))
     for f in FAILURES:
