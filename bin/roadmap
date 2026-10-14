@@ -757,10 +757,20 @@ def evaluate(model, state, today, cfg=None):
             added = [i for i in current
                      if i['id'] not in base and i['id'] not in exempt]
             if added:
-                lines = ['SCOPE CREEP -- %s was %d issues at baseline, now %d (+%d added).'
-                         % (_fmt_v(in_flight), len(base), len(current), len(added))]
+                # Baseline rows no longer open in this version are why 'now'
+                # minus 'was' can disagree with '+K', so name them when present.
+                current_ids = {i['id'] for i in current}
+                gone = sum(1 for b in base if b not in current_ids)
+                gone_note = ', %d since closed or moved out' % gone if gone else ''
+                lines = ['SCOPE CREEP -- %s was %d issues at baseline, now %d (+%d added%s).'
+                         % (_fmt_v(in_flight), len(base), len(current), len(added), gone_note)]
                 lines += ['    %s  %s' % (i['id'], (i.get('title') or '')[:58])
                           for i in added[:3]]
+                # Past the third row, ids only: every added row stays named
+                # without lengthening the session-start block (github-s8e08).
+                if len(added) > 3:
+                    lines.append('    …%d more: %s' % (len(added) - 3,
+                                                       ', '.join(i['id'] for i in added[3:])))
                 lines.append('  Accept it deliberately with: roadmap pin %s'
                              % _fmt_v(in_flight))
                 out.append({'id': 2, 'bypass': False, 'lines': lines})

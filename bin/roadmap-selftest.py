@@ -663,6 +663,37 @@ check('setup: closed-only tag still makes the version in-flight',
 check('c2 silent when baseline and current are both empty',
       2 in conds(CREEP_EMPTY_INFLIGHT, state(baselines={'0.16.0': []})), False)
 
+# --- github-s8e08: the creep list named 3 of N added rows and dropped the rest
+# silently ('+4 added' over three ids, seen live 2026-10-14). Rows past
+# the third now go on one '…N more:' line, ids only, so every added row is
+# named while the hook's block stays short.
+CREEP_FIVE = rm.build_model(
+    [tagged('v0.16.0', id='base', issue_type='task')]
+    + [tagged('v0.16.0', id='new%d' % n, issue_type='task', title='added %d' % n)
+       for n in range(1, 6)],
+    [], [(0, 15, 0)])
+_c2_five = conds(CREEP_FIVE, state(baselines={'0.16.0': ['base']}))[2]['lines']
+check('c2 header counts all five added', _c2_five[0],
+      'SCOPE CREEP -- v0.16.0 was 1 issues at baseline, now 6 (+5 added).')
+check('c2 lists three rows with titles',
+      [l.split()[0] for l in _c2_five[1:4]], ['new1', 'new2', 'new3'])
+# MUST-HIT: the two rows past the cap are NAMED, not just counted.
+check('c2 names the rows past the cap', _c2_five[4], '    …2 more: new4, new5')
+check('c2 still ends with the pin remedy', _c2_five[-1].strip().startswith('Accept it'), True)
+# MUST-MISS: exactly three added -> no overflow line at all.
+CREEP_THREE = rm.build_model(
+    [tagged('v0.16.0', id='base', issue_type='task')]
+    + [tagged('v0.16.0', id='new%d' % n, issue_type='task') for n in range(1, 4)],
+    [], [(0, 15, 0)])
+check('c2 with exactly three added has no overflow line',
+      any('more:' in l for l in conds(CREEP_THREE, state(baselines={'0.16.0': ['base']}))[2]['lines']),
+      False)
+# Baseline rows that closed or moved out are what make 'now' minus 'was'
+# disagree with '+K'; the header says how many, and only when there are any.
+_c2_gone = conds(CREEP_THREE, state(baselines={'0.16.0': ['base', 'gone1', 'gone2']}))[2]['lines'][0]
+check('c2 header names baseline rows since closed or moved out', _c2_gone,
+      'SCOPE CREEP -- v0.16.0 was 3 issues at baseline, now 4 (+3 added, 2 since closed or moved out).')
+
 # --- fix round 1: load_state / save_state coverage ------------------------
 # Every earlier assertion injects a state() dict directly, so the real
 # file read/write path -- and design rule 9 (absent/corrupt state behaves

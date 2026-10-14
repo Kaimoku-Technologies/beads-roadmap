@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `roadmap v1.2.0`. Titles on these rows are cut at 46 characters instead of
   52 to make room. `--json` is unchanged; it already listed the ids.
 
+### Fixed
+
+- **The SCOPE CREEP condition names every added issue.** It listed the first
+  three and dropped the rest without saying so, so `+4 added` sat over three
+  ids. Rows past the third now follow on one `…N more:` line, ids only. When
+  baseline issues have since closed or moved out of the version, the header
+  says how many (`+3 added, 2 since closed or moved out`), which is why
+  "now" minus "was" can differ from the added count.
+
 ## [0.6.0] — 2026-10-14
 
 ### Changed
