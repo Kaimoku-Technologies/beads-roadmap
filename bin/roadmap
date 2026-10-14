@@ -1163,6 +1163,7 @@ def render_json(model, conditions, cfg=None):
         'backlog': [{'id': i['id'], 'priority': _prio(i),
                      'title': i.get('title') or ''} for i in (model.get('backlog') or [])],
         'horizon': cfg.get('horizon') or 0,
+        'scoped': bool(model.get('scoped')),
         'hotfix_count': len(model['hotfix']),
         'hotfix': [{'id': i['id'], 'priority': _prio(i),
                     'title': i.get('title') or ''} for i in model['hotfix']],
@@ -1176,8 +1177,12 @@ def render_json(model, conditions, cfg=None):
 def render_board(model, conditions, cfg=None):
     cfg = cfg or CONFIG
     tp = model.get('throughput') or {}
-    lines = ['ROADMAP · %s · cut %s' % (cfg['release_namespace'],
-                                        _fmt_v(model['cut']) if model['cut'] else '(none)')]
+    # ' · scoped' (github-bjxle): a scoped board's hotfix queue is partial by
+    # design, and the reader must know the catch-all board has the rest.
+    lines = ['ROADMAP · %s · cut %s%s'
+             % (cfg['release_namespace'],
+                _fmt_v(model['cut']) if model['cut'] else '(none)',
+                ' · scoped' if model.get('scoped') else '')]
     lines.append('')
 
     if model.get('in_flight'):

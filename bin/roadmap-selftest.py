@@ -3017,6 +3017,19 @@ check('in_release_7d is unchanged by scoping', (TP_SC['in_release_7d'], TP_UN['i
 check('scoped on-plan share is 2 of 4', TP_SC['on_plan_share_14d'], 0.5)
 check('unscoped on-plan share is 2 of 6 (control)', round(TP_UN['on_plan_share_14d'], 3), 0.333)
 
+# A scoped board SAYS so: a reader of its hotfix queue must know it is partial
+# and that the catch-all board has the rest. An unscoped header is unchanged
+# -- byte-identical output for every single-product install.
+check('scoped board header carries the marker',
+      rm.render_board(SC_M, []).splitlines()[0], 'ROADMAP · acme-app · cut v0.15.0 · scoped')
+check('unscoped header is unchanged (must-miss)',
+      rm.render_board(UN_M, []).splitlines()[0], 'ROADMAP · acme-app · cut v0.15.0')
+check('the original fixture\'s header is byte-identical',
+      rm.render_board(M, []).splitlines()[0], 'ROADMAP · acme-app · cut v0.15.0')
+check('json: scoped true', json.loads(rm.render_json(SC_M, [])).get('scoped'), True)
+check('json: scoped false on a board with no key',
+      json.loads(rm.render_json(UN_M, [])).get('scoped'), False)
+
 if FAILURES:
     print('FAIL (%d)' % len(FAILURES))
     for f in FAILURES:
