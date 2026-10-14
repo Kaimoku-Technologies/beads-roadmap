@@ -1,143 +1,29 @@
-# roadmap
+# beads-roadmap
 
-A Claude Code plugin that renders a product roadmap **derived** from a
-[beads](https://github.com/steveyegge/beads) (`bd`) issue board on every run —
-versions, a hotfix queue, unscheduled work, and scope creep against a pinned
-baseline. It ships a SessionStart hook that reports planning drift and stays
-silent when there is none.
+A roadmap for your [beads](https://github.com/steveyegge/beads) (`bd`) issue
+board: which release each open issue belongs to, what is in flight, what is
+urgent enough to hotfix, and what nobody has scheduled yet.
 
-The tool never writes to `bd` — no label, no comment, no field. The only
-local state it keeps is a small state file next to your `roadmap.toml` (the
-scope-creep baseline plus the SessionStart hook's throttle stamp), and that
-file exists precisely so it can be compared against a fresh `bd` read on the
-next run, not as a cache of it.
+**Why it exists.** A `bd` board grows fast — hundreds of open issues, a dozen
+epics, and a new idea every five minutes. Without a roadmap, every idea
+competes with the release you are trying to finish. `roadmap` gives each issue
+a version, shows you the one in flight, and nags you (at session start, and
+only when something is actually off) when work is drifting away from the plan.
+So one session can work on `v1.2.0` while the shiny new idea waits in the
+backlog instead of sneaking into the release.
 
-## Install
+**Who it's for.** Anyone tracking work in `bd` who cuts versioned releases —
+especially if AI coding agents do part of the work. It ships as a
+[Claude Code](https://claude.com/claude-code) plugin, and as a plain
+command-line tool you can run from any terminal, IDE or other coding agent.
 
-```
-/plugin marketplace add Kaimoku-Technologies/beads-roadmap
-/plugin install roadmap@beads-roadmap
-```
+**It only reads.** The tool never writes to `bd` — no label, no comment, no
+field. Every run rebuilds the roadmap from a fresh `bd` read ("derived, not
+stored"). The only local state is a small file next to your `roadmap.toml`
+holding a scope-creep baseline and a throttle stamp, kept so the next run has
+something to compare against.
 
-(If you're working from a local checkout instead of a marketplace listing,
-point Claude Code's plugin loader at this directory directly.)
-
-Using Cursor, Codex, Gemini CLI or another agent instead? See
-[Using it with other agents](#using-it-with-other-agents).
-
-## Upgrading from 0.1.x
-
-0.2.0 moved the state file. It was one file per machine:
-
-```
-~/.claude/roadmap-cadence-state.json
-```
-
-and it is now one per install, beside your `roadmap.toml`:
-
-```
-<the directory holding roadmap.toml>/.roadmap-state.json
-```
-
-**Nothing is migrated automatically, on purpose.** The old file was shared by
-every workspace on the machine, so it holds whatever the last workspace to run
-`roadmap` left there — in most workspaces, *another* product's numbers.
-Seeding every install from it would hand them all the same baselines, and a
-wrong baseline is the false-clean signal this tool exists to prevent.
-
-Copy it **only if this is the workspace that was using it**:
-
-```
-cp ~/.claude/roadmap-cadence-state.json <dir>/.roadmap-state.json
-```
-
-`roadmap` prints that line with both paths filled in the first time it runs
-with no state file beside your config, and the SessionStart hook says the same
-thing once in-session.
-
-**Ignoring it is a legitimate choice** — and in every workspace that was not
-the one writing that file, it is the right one. What you give up — and the one
-thing you do not:
-
-- **The scope-creep baselines.** The version in flight reports `no baseline
-  yet` until you re-baseline it deliberately with `roadmap pin v1.2.0`, or
-  until the next tag is cut and the tool snapshots the new version itself.
-- **`last_cut`.** The first run records where the tag train stands now and
-  baselines nothing, so a tag cut between your last 0.1.x run and this one
-  goes unannounced.
-- **Not the warm-up start**, as long as your `roadmap.toml` sets
-  `convention_start` — `roadmap init` writes it, and an absent state file is
-  seeded from it. If you hand-wrote a config without that key, warm-up
-  restarts from today and the off-plan condition stays quiet for 14 days.
-
-Add `.roadmap-state.json` to your `.gitignore`. Once every workspace you care
-about has been dealt with, the old file can be deleted; the only thing still
-reading that path is the fallback for an install with no `roadmap.toml` at all.
-
-## First run: `roadmap init`
-
-Before anything else, run `init` once per workspace. **Inside a Claude Code
-session** — where the plugin's `bin/` is on your `PATH` — that is:
-
-```
-/roadmap init
-```
-
-Outside a session, bare `roadmap` will not resolve: `PATH` only carries the
-plugin's `bin/` because Claude Code injects it. Call it by path instead:
-
-```
-~/.claude/plugins/cache/beads-roadmap/roadmap/<version>/bin/roadmap init
-```
-
-**It writes `roadmap.toml` into the current working directory**, so run it
-from the directory you want to be the root of this install — normally the
-workspace `bd` runs in. Relative paths inside the file resolve against the
-file, never against your shell's cwd. The state file (`.roadmap-state.json`,
-the scope-creep baseline plus the hook's throttle stamp) lands next to it; add
-it to your `.gitignore`.
-
-It probes the directory layout — is this a git checkout, does it carry
-semver `v*` tags — and reads the release-label namespace off the **board
-itself** (via `bd list`, not the directory name): if the board carries
-release labels in exactly one namespace, that's the evidence it uses. It
-prints what it found and writes `roadmap.toml`.
-
-A repo with **no `v*` tags yet** doesn't stop it: `init` prints a warning and
-writes `roadmap.toml` anyway. Refusing there used to send people off to
-hand-write the file, which walks straight past the namespace probe — the one
-thing here that genuinely cannot be guessed. It still **refuses to guess**,
-writing nothing, on an actually ambiguous layout: no `.git`, or a board whose
-release labels are absent or span more than one namespace. (The directory
-name appears only as a last-resort suggestion in that refusal, never as a
-value it writes on its own.) In that case, copy `roadmap.example.toml` and
-fill in the three keys by hand.
-
-## Using it
-
-Inside a Claude Code session, use the `/roadmap` slash command, or just ask
-("what should we ship next?", "is this a hotfix?") and the bundled skill runs
-it for you. In a shell, the same commands are `roadmap …` (by full path
-outside a session; see above).
-
-| Command | What it shows |
-| --- | --- |
-| `/roadmap` | The whole board (see below) |
-| `/roadmap v1.2.0` | One version in detail: every open issue, gating epics, counts |
-| `/roadmap hotfix` | The full hotfix queue (the board shows the top three) |
-| `/roadmap unscheduled` | Every feature and epic with no version (the board shows the top three) |
-| `/roadmap backlog` | Every issue labelled `release:<namespace>-backlog`: triaged, deliberately beyond the horizon |
-| `/roadmap plan` | Proposes what to put in the next planned version |
-| `/roadmap plan v1.2.0` | The same for a specific version |
-| `/roadmap pin v1.2.0` | Re-baselines that version's scope-creep snapshot |
-| `/roadmap init` | Writes `roadmap.toml` (once per workspace, see above) |
-| `/roadmap --version` | The plugin version, and the path of the `roadmap` that answered |
-| `/roadmap check` | The session-start drift check, as plain text (nothing when clean) |
-
-Every command rebuilds everything from a fresh `bd` read, so there is nothing
-to refresh or sync: run it whenever you want the current picture.
-
-### Reading the board
+## What it looks like
 
 An illustrative board (the issues are invented; the layout is real):
 
@@ -171,6 +57,187 @@ ROADMAP · acme-app · cut v1.1.0
      v1.2.0        8  7  6  5  4  3   open, last 6 days
      creep:   none since baseline (8 issues)
 ```
+
+[Reading the board](#reading-the-board) explains each section.
+
+## Before you start: what your board needs
+
+The tool derives everything from conventions your board must **already**
+follow. If it doesn't, `roadmap` still renders — usually an empty or
+misleading board — **without an error telling you why**. So check these
+first:
+
+1. **[beads](https://github.com/steveyegge/beads) (`bd`) is the issue
+   tracker.** The tool shells out to `bd list --json`; there is no other
+   input.
+2. **Release labels are shaped `release:<namespace>-v<semver>`**, e.g.
+   `release:acme-app-v1.2.0`. This is how an issue is tied to a version.
+3. **Versions are semver `v*` git tags** (`v1.2.0`, not `1.2.0` or
+   `v1.2.0-beta`) in the repository named by `tag_repo`. The highest tag
+   reachable there is what "in flight" is measured against.
+4. **`bd`'s parent/epic hierarchy is populated.** Work proposed for a version
+   (`roadmap plan`) is found by walking from that version's gating epics
+   through `bd`'s parent links — both the `parent` field and dotted child
+   ids, since neither encoding alone is complete on a real board.
+5. **`bd`'s `feature` / `epic` / `bug` issue types and 0–4 priority scale are
+   in use.** Unscheduled work is `feature`/`epic` rows carrying no release
+   label; the hotfix queue is priority-0/1 bugs (plus security-marked
+   priority-0/1/2 issues) carrying no release label either. Deferred issues
+   are left out of both.
+6. **Optional: `release:<namespace>-backlog` marks triaged work you have
+   deliberately parked beyond the horizon.** It takes a row out of the
+   unscheduled list (any type is listed by `roadmap backlog`), so
+   "unscheduled" comes to mean *nobody has triaged this yet*. It never
+   exempts a row from the hotfix queue, and a backlogged priority-0/1
+   feature or epic is still reported, because parking something that severe
+   is itself the planning bug. Promote from the backlog by removing the
+   label and adding a version.
+7. **Optional: `horizon = N` in `roadmap.toml`** asks for the in-flight
+   version plus the planned minors to number at least N. When fewer carry
+   work, the board and the session-start check report `HORIZON SHORT` and
+   name the next minor to tag. Off (0) by default.
+
+You also need **Python 3.11 or newer** (standard library only) and `bd` on
+your `PATH`. See [Requirements](#requirements) for the details.
+
+### Terms used below
+
+| Term | Meaning |
+| --- | --- |
+| **namespace** | The `<namespace>` in your release labels — a string you choose, e.g. `acme-app`. Lets several products share one `bd` board. |
+| **cut** | The newest `v*` git tag: the last version you shipped. |
+| **in flight** | The lowest version above the cut tag that has issues labelled for it — the release you are working toward now. |
+| **planned** | Later minor or major versions that already have at least one labelled issue. (A patch version is never "planned": see hotfix queue.) |
+| **gating epic** | An epic carrying a version's release label. Its children are where `roadmap plan` looks for work that belongs in that version. |
+| **hotfix queue** | Urgent work with no version: priority-0/1 bugs, plus security issues at priority 0–2. Shippable as a patch without waiting for the in-flight release. |
+| **unscheduled** | Features and epics with no release label: nobody has decided when they ship. |
+| **backlog** | Work labelled `release:<namespace>-backlog`: triaged, and deliberately parked beyond the planning horizon. |
+| **scope creep** | Issues added to the in-flight version after it went in flight, compared against a baseline snapshot. |
+| **drift** | Any of nine planning problems (see [DESIGN.md](docs/DESIGN.md)) that the session-start check reports. |
+
+## Install
+
+Pick one. Both give you the same `roadmap` command.
+
+### Option A: Claude Code plugin
+
+```
+/plugin marketplace add Kaimoku-Technologies/beads-roadmap
+/plugin install roadmap@beads-roadmap
+```
+
+This adds the `/roadmap` slash command, a skill that tells Claude when to run
+it, and a session-start check that reports planning drift. (If you're working
+from a local checkout instead of a marketplace listing, point Claude Code's
+plugin loader at this directory directly.)
+
+### Option B: plain command-line tool (any terminal, IDE or agent)
+
+Everything that matters is one script, `bin/roadmap`. Download a release and
+put it on your `PATH`; no git needed:
+
+```
+curl -fsSL https://github.com/Kaimoku-Technologies/beads-roadmap/archive/refs/tags/v0.5.1.tar.gz | tar xz
+ln -s "$PWD/beads-roadmap-0.5.1/bin/roadmap" ~/.local/bin/roadmap
+roadmap --version
+```
+
+Keep the unpacked `beads-roadmap-0.5.1/` directory where it is: the link
+points into it, and `roadmap check` and `--version` read files beside the
+script. Any directory on your `PATH` works in place of `~/.local/bin`.
+`--version` should print a path inside that directory. Install 0.4.0 or
+later this way: earlier releases don't follow the symlink, so `--version`
+reports `version unknown` and `roadmap check` doesn't exist.
+
+The script runs under the first `python3` on your `PATH`, which must be
+3.11 or newer. macOS's `/usr/bin/python3` is 3.9, and on it `roadmap` prints
+`roadmap: unavailable: needs Python 3.11 or newer` instead of a board.
+
+**Prefer git?** `git clone https://github.com/Kaimoku-Technologies/beads-roadmap.git`
+and link `beads-roadmap/bin/roadmap` instead; `git pull` then upgrades to
+whatever is on `main`, which may be ahead of the latest release.
+
+**In an IDE** (PyCharm, VS Code, …), run `roadmap` in the built-in terminal,
+or register it as an external tool / task with the project root as its
+working directory. The output is plain text.
+
+**With another coding agent** (Cursor, Codex, Gemini CLI, …), install it this
+way, then see [Using it with other agents](#using-it-with-other-agents).
+
+## First run: `roadmap init`
+
+Run `init` once per workspace. **Inside a Claude Code session** — where the
+plugin's `bin/` is on your `PATH` — that is:
+
+```
+/roadmap init
+```
+
+With Option B, it's `roadmap init` in a shell. With Option A but outside a
+session, bare `roadmap` will not resolve: `PATH` only carries the plugin's
+`bin/` because Claude Code injects it. Call it by path instead:
+
+```
+~/.claude/plugins/cache/beads-roadmap/roadmap/<version>/bin/roadmap init
+```
+
+**It writes `roadmap.toml` into the current working directory**, so run it
+from the directory you want to be the root of this install — normally the
+workspace `bd` runs in. Relative paths inside the file resolve against the
+file, never against your shell's cwd. The state file (`.roadmap-state.json`,
+the scope-creep baseline plus the hook's throttle stamp) lands next to it; add
+it to your `.gitignore`.
+
+It probes the directory layout — is this a git checkout, does it carry
+semver `v*` tags — and reads the release-label namespace off the **board
+itself** (via `bd list`, not the directory name): if the board carries
+release labels in exactly one namespace, that's the evidence it uses. It
+prints what it found and writes `roadmap.toml`.
+
+A repo with **no `v*` tags yet** doesn't stop it: `init` prints a warning and
+writes `roadmap.toml` anyway. Refusing there used to send people off to
+hand-write the file, which walks straight past the namespace probe — the one
+thing here that genuinely cannot be guessed. It still **refuses to guess**,
+writing nothing, on an actually ambiguous layout: no `.git`, or a board whose
+release labels are absent or span more than one namespace. (The directory
+name appears only as a last-resort suggestion in that refusal, never as a
+value it writes on its own.) In that case, copy `roadmap.example.toml` and
+fill in the three keys by hand.
+
+**Starting from scratch?** If your board has no release labels yet, `init`
+has no namespace to find. Label one issue first, then run `init`:
+
+```
+bd label add <some-issue-id> release:<your-namespace>-v0.1.0
+```
+
+## Using it
+
+Inside a Claude Code session, use the `/roadmap` slash command, or just ask
+("what should we ship next?", "is this a hotfix?") and the bundled skill runs
+it for you. In a shell, the same commands are `roadmap …` (by full path
+outside a session with Option A; see above).
+
+| Command | What it shows |
+| --- | --- |
+| `/roadmap` | The whole board (see below) |
+| `/roadmap v1.2.0` | One version in detail: every open issue, gating epics, counts |
+| `/roadmap hotfix` | The full hotfix queue (the board shows the top three) |
+| `/roadmap unscheduled` | Every feature and epic with no version (the board shows the top three) |
+| `/roadmap backlog` | Every issue labelled `release:<namespace>-backlog`: triaged, deliberately beyond the horizon |
+| `/roadmap plan` | Proposes what to put in the next planned version |
+| `/roadmap plan v1.2.0` | The same for a specific version |
+| `/roadmap pin v1.2.0` | Re-baselines that version's scope-creep snapshot |
+| `/roadmap init` | Writes `roadmap.toml` (once per workspace, see above) |
+| `/roadmap --version` | The plugin version, and the path of the `roadmap` that answered |
+| `/roadmap check` | The session-start drift check, as plain text (nothing when clean) |
+
+Every command rebuilds everything from a fresh `bd` read, so there is nothing
+to refresh or sync: run it whenever you want the current picture.
+
+### Reading the board
+
+Using the [example above](#what-it-looks-like):
 
 - **The header** names the release namespace and the newest `v*` tag (`cut`).
 - **IN FLIGHT** is the lowest version above that tag: the release you are
@@ -252,9 +319,8 @@ the exit code.
 like `roadmap 0.2.1 (/path/to/bin/roadmap)`. It works without a
 `roadmap.toml`. The path matters as much as the number: updating the plugin
 only takes effect after you restart Claude Code, and a local checkout can
-differ from the installed copy. To pick up a new release, run
-`/plugin marketplace update beads-roadmap`, then
-`/plugin update roadmap@beads-roadmap`, then restart.
+differ from the installed copy. To pick up a new release, see
+[Upgrading](#upgrading).
 
 Other flags: `--today YYYY-MM-DD` renders the board as of another date (for
 the day-count windows and warm-up), `--state PATH` uses a different state
@@ -272,47 +338,18 @@ session until fixed, including a hotfix queue that holds a priority-0/1
 issue. The same conditions appear at the bottom of the full board, so
 `/roadmap` is always the place to look closer.
 
+Not on Claude Code? `roadmap check` prints the same thing; see
+[below](#the-drift-check-roadmap-check).
+
 ## Using it with other agents
 
-Everything that matters is one command-line tool, `bin/roadmap`: standard
-library Python 3.11+, reading `bd`, finding `roadmap.toml` by walking up
-from the current directory. Any coding agent that can run shell commands
-can use it. The Claude Code plugin only adds packaging: the install, the
-`/roadmap` command, a skill that tells the agent when to use it, and the
-session-start check. Here is how to get each of those elsewhere.
-
-### Install
-
-Download a release and put `roadmap` on your `PATH`; no git needed:
-
-```
-curl -fsSL https://github.com/Kaimoku-Technologies/beads-roadmap/archive/refs/tags/v0.5.1.tar.gz | tar xz
-ln -s "$PWD/beads-roadmap-0.5.1/bin/roadmap" ~/.local/bin/roadmap
-roadmap --version
-```
-
-Keep the unpacked `beads-roadmap-0.5.1/` directory where it is: the link
-points into it, and `roadmap check` and `--version` read files beside the
-script. Any directory on your `PATH` works in place of `~/.local/bin`.
-`--version` should print a path inside that directory. Install 0.4.0 or
-later this way: earlier releases don't follow the symlink, so `--version`
-reports `version unknown` and `roadmap check` doesn't exist.
-
-The script runs under the first `python3` on your `PATH`, which must be
-3.11 or newer. macOS's `/usr/bin/python3` is 3.9, and on it `roadmap` prints
-`roadmap: unavailable: needs Python 3.11 or newer` instead of a board.
-
-**To upgrade,** download the newer release the same way and move the link
-to it with `ln -sfn`; then delete the old directory. Your board's state
-lives beside `roadmap.toml`, not in the install, so nothing is lost. The
-[CHANGELOG](CHANGELOG.md) lists what each release changed.
-
-**Prefer git?** `git clone https://github.com/Kaimoku-Technologies/beads-roadmap.git`
-and link `beads-roadmap/bin/roadmap` instead; `git pull` then upgrades to
-whatever is on `main`, which may be ahead of the latest release.
-
-Then run `roadmap init` in your workspace, as described
-[above](#first-run-roadmap-init).
+Any coding agent that can run shell commands can use `roadmap`: it is
+standard-library Python 3.11+, reads `bd`, and finds `roadmap.toml` by
+walking up from the current directory. Install it with
+[Option B](#option-b-plain-command-line-tool-any-terminal-ide-or-agent). The
+Claude Code plugin only adds packaging — the install, the `/roadmap` command,
+a skill that tells the agent when to use it, and the session-start check.
+Here is how to get the last three elsewhere.
 
 ### Tell your agent about it
 
@@ -365,42 +402,6 @@ file beside `roadmap.toml`. Where to run it:
 - **Your agent instructions**: "run `roadmap check` at the start of planning
   work" (already in the snippet above).
 
-## Conventions your board must already follow
-
-This tool derives everything from existing `bd` conventions. If your board
-doesn't yet follow these, it will render — usually an empty or misleading
-board — without an error telling you why:
-
-1. **[beads](https://github.com/steveyegge/beads) (`bd`) is the issue
-   tracker.** The tool shells out to `bd list --json`; there is no other
-   input.
-2. **Release labels are shaped `release:<namespace>-v<semver>`**, e.g.
-   `release:acme-app-v1.2.0`. This is how an issue is tied to a version.
-3. **Versions are semver `v*` git tags** (`v1.2.0`, not `1.2.0` or
-   `v1.2.0-beta`) in the repository named by `tag_repo`. The highest tag
-   reachable there is what "in flight" is measured against.
-4. **`bd`'s parent/epic hierarchy is populated.** Work proposed for a version
-   (`roadmap plan`) is found by walking from that version's gating epics
-   through `bd`'s parent links — both the `parent` field and dotted child
-   ids, since neither encoding alone is complete on a real board.
-5. **`bd`'s `feature` / `epic` / `bug` issue types and 0–4 priority scale are
-   in use.** Unscheduled work is `feature`/`epic` rows carrying no release
-   label; the hotfix queue is priority-0/1 bugs (plus security-marked
-   priority-0/1/2 issues) carrying no release label either. Deferred issues
-   are left out of both.
-6. **Optional: `release:<namespace>-backlog` marks triaged work you have
-   deliberately parked beyond the horizon.** It takes a row out of the
-   unscheduled list (any type is listed by `roadmap backlog`), so
-   "unscheduled" comes to mean *nobody has triaged this yet*. It never
-   exempts a row from the hotfix queue, and a backlogged priority-0/1
-   feature or epic is still reported, because parking something that severe
-   is itself the planning bug. Promote from the backlog by removing the
-   label and adding a version.
-7. **Optional: `horizon = N` in `roadmap.toml`** asks for the in-flight
-   version plus the planned minors to number at least N. When fewer carry
-   work, the board and the session-start check report `HORIZON SHORT` and
-   name the next minor to tag. Off (0) by default.
-
 ## Requirements
 
 **Python 3.11 or newer, standard library only.** The config loader uses
@@ -439,13 +440,67 @@ exits non-zero and `roadmap` fails open with a named reason; one that omits
 `labels` would render an empty board instead, which is why the check is worth
 doing by hand.
 
-## `github-*` ids in code comments
+## Upgrading
 
-Several comments and docstrings in this codebase cite ids like `github-4jmwr`
-— these are provenance from the tool's original issue tracker (the workspace
-this plugin was extracted from) and were kept deliberately, as a record of
-*why* a given piece of logic exists. They do not resolve to any public issue
-tracker; don't follow them expecting a link to work.
+**Plugin (Option A):** run `/plugin marketplace update beads-roadmap`, then
+`/plugin update roadmap@beads-roadmap`, then restart Claude Code — the update
+only takes effect after the restart.
+
+**Plain command (Option B):** download the newer release the same way and
+move the link to it with `ln -sfn`; then delete the old directory. Your
+board's state lives beside `roadmap.toml`, not in the install, so nothing is
+lost.
+
+The [CHANGELOG](CHANGELOG.md) lists what each release changed.
+
+### Upgrading from 0.1.x
+
+0.2.0 moved the state file. It was one file per machine:
+
+```
+~/.claude/roadmap-cadence-state.json
+```
+
+and it is now one per install, beside your `roadmap.toml`:
+
+```
+<the directory holding roadmap.toml>/.roadmap-state.json
+```
+
+**Nothing is migrated automatically, on purpose.** The old file was shared by
+every workspace on the machine, so it holds whatever the last workspace to run
+`roadmap` left there — in most workspaces, *another* product's numbers.
+Seeding every install from it would hand them all the same baselines, and a
+wrong baseline is the false-clean signal this tool exists to prevent.
+
+Copy it **only if this is the workspace that was using it**:
+
+```
+cp ~/.claude/roadmap-cadence-state.json <dir>/.roadmap-state.json
+```
+
+`roadmap` prints that line with both paths filled in the first time it runs
+with no state file beside your config, and the SessionStart hook says the same
+thing once in-session.
+
+**Ignoring it is a legitimate choice** — and in every workspace that was not
+the one writing that file, it is the right one. What you give up — and the one
+thing you do not:
+
+- **The scope-creep baselines.** The version in flight reports `no baseline
+  yet` until you re-baseline it deliberately with `roadmap pin v1.2.0`, or
+  until the next tag is cut and the tool snapshots the new version itself.
+- **`last_cut`.** The first run records where the tag train stands now and
+  baselines nothing, so a tag cut between your last 0.1.x run and this one
+  goes unannounced.
+- **Not the warm-up start**, as long as your `roadmap.toml` sets
+  `convention_start` — `roadmap init` writes it, and an absent state file is
+  seeded from it. If you hand-wrote a config without that key, warm-up
+  restarts from today and the off-plan condition stays quiet for 14 days.
+
+Add `.roadmap-state.json` to your `.gitignore`. Once every workspace you care
+about has been dealt with, the old file can be deleted; the only thing still
+reading that path is the fallback for an install with no `roadmap.toml` at all.
 
 ## Design
 
@@ -453,6 +508,14 @@ See [`docs/DESIGN.md`](docs/DESIGN.md) for the short public design: what
 "derived, not stored" means concretely, the nine drift conditions the
 SessionStart hook can report, and the fail-open contract that keeps a broken
 or unconfigured install from ever breaking a session.
+
+## `github-*` ids in code comments
+
+Several comments and docstrings in this codebase cite ids like `github-4jmwr`
+— these are provenance from the tool's original issue tracker (the workspace
+this plugin was extracted from) and were kept deliberately, as a record of
+*why* a given piece of logic exists. They do not resolve to any public issue
+tracker; don't follow them expecting a link to work.
 
 ## License
 

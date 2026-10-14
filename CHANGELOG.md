@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The README is reordered for first-time readers.** It now opens with what
+  the tool is for and the example board, then the board conventions it
+  requires (before install, since a board that skips them renders empty with
+  no error), a short glossary, and two install paths side by side: the
+  Claude Code plugin and the plain command-line tool for any terminal, IDE or
+  agent. Day-to-day use, requirements and "Upgrading from 0.1.x" follow; no
+  reference content was removed.
+
 ## [0.5.1] — 2026-09-26
 
 ### Fixed
