@@ -32,9 +32,9 @@ ROADMAP · acme-app · cut v1.1.0
 
   IN FLIGHT
      v1.2.0       3 open · 5 done
-        P1 bug      Login fails when the session cookie is expired
-        P2 feature  Export reports as CSV
-        P3 task     Rename the settings page
+        P1 bug      acme-7       Login fails when the session cookie is expired
+        P2 feature  acme-12      Export reports as CSV
+        P3 task     acme-15      Rename the settings page
         gates: acme-5      Reporting overhaul
 
   HOTFIX QUEUE v1.2.1 (implied)   1 unversioned · cuttable independently
@@ -42,8 +42,8 @@ ROADMAP · acme-app · cut v1.1.0
 
   PLANNED
      v1.3.0       4 open · 0 done
-        P2 feature  Single sign-on
-        P2 feature  Dark mode
+        P2 feature  acme-70      Single sign-on
+        P2 feature  acme-71      Dark mode
         …2 more · /roadmap v1.3.0
 
   UNSCHEDULED  6 features/epics carry no version

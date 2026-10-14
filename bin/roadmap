@@ -996,9 +996,13 @@ def _version_block(model, v, lines, cap=None, features_only=False):
     if features_only:
         rows = [i for i in rows if i.get('issue_type') == 'feature']
     shown = rows if cap is None else rows[:cap]
+    # Same column order as the hotfix and unscheduled rows (github-harrf): the id
+    # is what makes a row actionable. The title gives up 6 columns to keep the
+    # row inside 80 for a 12-char id; a longer id just pushes the title right.
     for i in shown:
-        lines.append('        P%d %-8s %s'
-                     % (_prio(i), i.get('issue_type') or '', (i.get('title') or '')[:52]))
+        lines.append('        P%d %-8s %-12s %s'
+                     % (_prio(i), i.get('issue_type') or '', i['id'],
+                        (i.get('title') or '')[:46]))
     hidden = len(entry['leaves_open']) - len(shown)
     if hidden > 0:
         lines.append('        …%d more · /roadmap %s' % (hidden, _fmt_v(v)))

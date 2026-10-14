@@ -1153,6 +1153,24 @@ check('planned hides the task', 'task one' in planned_section, False)
 check('planned hides the chore', 'chore one' in planned_section, False)
 check('planned names the hidden count', '…2 more · /roadmap v0.17.0' in planned_section, True)
 
+# github-harrf: version rows carry the issue id, in the same column order as
+# the hotfix and unscheduled rows (priority, type, id, title), so a row can be
+# acted on (bd show / claim) without searching. Matched as a whole row, not a
+# bare 'f1' substring, which the fixture's ids would satisfy by accident.
+import re as _vr
+inflight_section = mix_board.split('IN FLIGHT')[1].split('PLANNED')[0]
+check('in-flight row shows its id',
+      bool(_vr.search(r'^ +P3 task +a +keeps inflight nonempty$', inflight_section, _vr.M)), True)
+check('planned row shows its id',
+      bool(_vr.search(r'^ +P2 feature +f1 +feat one$', planned_section, _vr.M)), True)
+# MUST-MISS: a row hidden by features_only must not leak its id either.
+check('planned hides the task id', bool(_vr.search(r'^ +P3 task +t1 ', planned_section, _vr.M)), False)
+# The single-version view (`roadmap v0.17.0`) shares _version_block: every row, ids included.
+_vb = []
+rm._version_block(MIX_MODEL, (0, 17, 0), _vb)
+check('version view lists every id',
+      [l.split()[2] for l in _vb if l.startswith('        P')], ['f1', 't1', 'c1'])
+
 # MUST-MISS control: a planned version whose rows are all features and all
 # fit prints NO …more pointer -- proves the pointer is conditional, not
 # always-on.

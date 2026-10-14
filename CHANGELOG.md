@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **IN FLIGHT and PLANNED rows show the issue id**, in the same column order
+  as the hotfix and unscheduled rows (priority, type, id, title), so a row can
+  be acted on without searching for it. The same rows appear in
+  `roadmap v1.2.0`. Titles on these rows are cut at 46 characters instead of
+  52 to make room. `--json` is unchanged; it already listed the ids.
+
 ## [0.6.0] — 2026-10-14
 
 ### Changed
