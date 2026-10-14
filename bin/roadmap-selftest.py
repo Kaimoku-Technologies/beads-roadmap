@@ -2845,6 +2845,45 @@ check_type_rejected('horizon wrong type (string)', GOOD + 'horizon = "3"\n', 'ho
 check_type_rejected('horizon wrong type (bool)', GOOD + 'horizon = true\n', 'horizon')
 check_type_rejected('horizon negative', GOOD + 'horizon = -1\n', 'horizon')
 
+# --- github-bjxle: scoped boards -- the config surface ---------------------
+# Three OPTIONAL keys. Absent, a board is the CATCH-ALL and renders exactly as
+# before; present, each is validated by name and type like horizon. The empty
+# string is refused because '' is a prefix of EVERY title and id -- one stray
+# "" would claim the whole board and silently un-scope it.
+_sd, _sp = write_cfg(GOOD)
+_scfg = rm.load_config(_sp)
+check('scoped defaults to False', _scfg.get('scoped'), False)
+check('claim_title_prefixes defaults to an empty tuple', _scfg.get('claim_title_prefixes'), ())
+check('claim_id_prefixes defaults to an empty tuple', _scfg.get('claim_id_prefixes'), ())
+_sd, _sp = write_cfg(GOOD + 'scoped = true\n')
+try:
+    check('scoped alone loads (labels-and-ancestry-only scope)',
+          rm.load_config(_sp)['scoped'], True)
+except Exception as _exc:
+    check('scoped alone loads (labels-and-ancestry-only scope)', repr(_exc), True)
+_sd, _sp = write_cfg(GOOD + 'scoped = true\nclaim_title_prefixes = ["acme-app:"]\n'
+                     'claim_id_prefixes = ["acme-"]\n')
+try:
+    _scfg = rm.load_config(_sp)
+except Exception as _exc:
+    _scfg = {'error': repr(_exc)}
+check('claim_title_prefixes loads as a tuple', _scfg.get('claim_title_prefixes'), ('acme-app:',))
+check('claim_id_prefixes loads as a tuple', _scfg.get('claim_id_prefixes'), ('acme-',))
+check_type_rejected('scoped wrong type (string)', GOOD + 'scoped = "true"\n', 'scoped must be')
+check_type_rejected('scoped wrong type (int)', GOOD + 'scoped = 1\n', 'scoped must be')
+check_type_rejected('claim_title_prefixes bare string',
+                    GOOD + 'scoped = true\nclaim_title_prefixes = "acme-app:"\n',
+                    'claim_title_prefixes must be')
+check_type_rejected('claim_id_prefixes non-string element',
+                    GOOD + 'scoped = true\nclaim_id_prefixes = [1]\n', 'claim_id_prefixes must be')
+check_type_rejected('an empty claim prefix is refused (it would claim every row)',
+                    GOOD + 'scoped = true\nclaim_title_prefixes = [""]\n',
+                    'empty string')
+check_type_rejected('claims without scoped = true are refused',
+                    GOOD + 'claim_title_prefixes = ["acme-app:"]\n', 'scoped is not true')
+check_type_rejected('claims with scoped = false are refused',
+                    GOOD + 'scoped = false\nclaim_id_prefixes = ["acme-"]\n', 'scoped is not true')
+
 if FAILURES:
     print('FAIL (%d)' % len(FAILURES))
     for f in FAILURES:

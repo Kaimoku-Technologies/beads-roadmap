@@ -83,7 +83,8 @@ class RoadmapUnavailable(Exception):
 
 
 CONFIG_KEYS = ('workspace', 'tag_repo', 'release_namespace',
-               'convention_start', 'auto_label_prefixes', 'horizon')
+               'convention_start', 'auto_label_prefixes', 'horizon',
+               'scoped', 'claim_title_prefixes', 'claim_id_prefixes')
 REQUIRED_KEYS = ('workspace', 'tag_repo', 'release_namespace')
 
 # Set by configure(); every cfg=None default falls back to it. A module
@@ -184,6 +185,33 @@ def load_config(path=None, start=None, env=None, today=None):
         raise RoadmapUnavailable(
             '%s: horizon must be a non-negative integer, got %r' % (path, horizon))
 
+    # scoped (github-bjxle): opt-in. Absent or false, this board is the
+    # CATCH-ALL on a shared bd database and renders exactly as before. bool
+    # only -- `scoped = 1` or `"true"` is refused by name, like horizon.
+    scoped = raw.get('scoped', False)
+    if not isinstance(scoped, bool):
+        raise RoadmapUnavailable('%s: scoped must be true or false, got %r'
+                                 % (path, scoped))
+    claims = {}
+    for k in ('claim_title_prefixes', 'claim_id_prefixes'):
+        val = raw.get(k, [])
+        # Same trap as auto_label_prefixes: str.startswith() accepts a tuple,
+        # so a bare string would decompose into one-character prefixes.
+        if (isinstance(val, str) or not isinstance(val, list)
+                or not all(isinstance(x, str) for x in val)):
+            raise RoadmapUnavailable('%s: %s must be a list of strings, got %r'
+                                     % (path, k, val))
+        # '' is a prefix of EVERY title and id. One stray "" would claim the
+        # whole board and silently un-scope it -- the clean-wrong signal.
+        if any(x == '' for x in val):
+            raise RoadmapUnavailable('%s: %s contains an empty string, which '
+                                     'would claim every row' % (path, k))
+        # A rule with no switch is a likely mistake; refuse rather than infer.
+        if val and not scoped:
+            raise RoadmapUnavailable('%s: %s is set but scoped is not true -- '
+                                     'set scoped = true or remove it' % (path, k))
+        claims[k] = tuple(val)
+
     # convention_start is OPTIONAL (not in REQUIRED_KEYS): an absent value
     # AND an empty string alike seed `today`, the same rule load_state uses
     # for its own convention_start default. This is deliberate, not an
@@ -211,6 +239,9 @@ def load_config(path=None, start=None, env=None, today=None):
             'convention_start': started,
             'auto_label_prefixes': tuple(raw.get('auto_label_prefixes') or ()),
             'horizon': horizon,
+            'scoped': scoped,
+            'claim_title_prefixes': claims['claim_title_prefixes'],
+            'claim_id_prefixes': claims['claim_id_prefixes'],
             # Where this config was loaded FROM, so the state file can default
             # beside it (github-kkq4a, I3). Deliberately NOT in CONFIG_KEYS:
             # that tuple validates the raw TOML, so a user who writes
