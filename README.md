@@ -148,12 +148,12 @@ Everything that matters is one script, `bin/roadmap`. Download a release and
 put it on your `PATH`; no git needed:
 
 ```
-curl -fsSL https://github.com/Kaimoku-Technologies/beads-roadmap/archive/refs/tags/v0.7.0.tar.gz | tar xz
-ln -s "$PWD/beads-roadmap-0.7.0/bin/roadmap" ~/.local/bin/roadmap
+curl -fsSL https://github.com/Kaimoku-Technologies/beads-roadmap/archive/refs/tags/v0.8.0.tar.gz | tar xz
+ln -s "$PWD/beads-roadmap-0.8.0/bin/roadmap" ~/.local/bin/roadmap
 roadmap --version
 ```
 
-Keep the unpacked `beads-roadmap-0.7.0/` directory where it is: the link
+Keep the unpacked `beads-roadmap-0.8.0/` directory where it is: the link
 points into it, and `roadmap check` and `--version` read files beside the
 script. Any directory on your `PATH` works in place of `~/.local/bin`.
 `--version` should print a path inside that directory. Install 0.4.0 or
