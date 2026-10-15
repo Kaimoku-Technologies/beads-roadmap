@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`boards` in the catch-all's `roadmap.toml`: the session-start check and
+  `roadmap check` report every listed board.** The catch-all lists the
+  directories of its sibling boards; the hook runs each under its own config,
+  in parallel, judges each on its own state file and throttle, and prints one
+  report — the catch-all's lines as before, then a `-- <name>` block per
+  listed board with something to say. A listed board that is missing, cannot
+  be read, or is a second unscoped board on the same workspace is named under
+  the catch-all instead of being silent. `boards` with `scoped = true` is
+  refused: the board that lists the others is the catch-all. `--json` carries
+  `workspace` on every board and `boards` on one that lists them. An older
+  `roadmap` refuses the key by name; update the install before adding it.
+
+### Changed
+
+- Nothing for a board without `boards`: the text board, `--json` (apart from
+  the added `workspace` key) and the session-start check are byte-identical.
+
 ## [0.7.0] — 2026-10-14
 
 ### Added

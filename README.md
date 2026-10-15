@@ -102,6 +102,7 @@ first:
    Leave exactly one board per shared `bd` database unscoped: it is the
    catch-all that shows every unlabelled row. See
    [Several products, one `bd` board](#several-products-one-bd-board).
+9. **Optional: `boards = ["other-app", "third-app"]` in the catch-all's `roadmap.toml`**, listing the directories of the scoped boards that share its `bd` database. The session-start check and `roadmap check`, run from the catch-all's directory, then report every listed board, each on its own throttle. Cannot be combined with `scoped = true`. See [Hearing every board from one session](#hearing-every-board-from-one-session).
 
 You also need **Python 3.11 or newer** (standard library only) and `bd` on
 your `PATH`. See [Requirements](#requirements) for the details.
@@ -122,6 +123,7 @@ your `PATH`. See [Requirements](#requirements) for the details.
 | **owned** | An unlabelled row this board claims: it carries this namespace's release or backlog label, its nearest labelled ancestor epic does, or a configured title/id prefix matches. |
 | **scoped board** | A board with `scoped = true`: hotfix queue, unscheduled list and throughput cover owned rows only. Its header ends in `· scoped`. |
 | **catch-all board** | A board without `scoped`: shows every unlabelled row, as a single-product board always has. Keep exactly one per shared `bd` database. |
+| **listed board** | A scoped board named in the catch-all's `boards` list. The catch-all's session-start check runs it too and reports it under a `-- <name>` header; a listed board that is missing or cannot be read is itself reported. |
 | **drift** | Any of nine planning problems (see [DESIGN.md](docs/DESIGN.md)) that the session-start check reports. |
 
 ## Install
@@ -327,7 +329,9 @@ config, `bd` missing, Python too old), it prints `roadmap: unavailable: …` on
 stderr, puts the reason under an `unavailable` key in JSON, and **still exits
 0** so it can never break a session. Check for that key rather than trusting
 the exit code. `--json` also carries `"scoped"`, true when the board is
-scoped.
+scoped. `--json` also carries `"workspace"` (the resolved path) and, only on
+a board whose config has the key, `"boards"` — one `{name, config_path,
+exists}` per listed board.
 
 **Check which version you're running.** `roadmap --version` prints something
 like `roadmap 0.2.1 (/path/to/bin/roadmap)`. It works without a
@@ -381,6 +385,58 @@ A `roadmap` older than 0.7.0 refuses these keys by name and prints
 `roadmap: unavailable: … unknown key(s): scoped`, so the board goes silent.
 Update the install before adding them.
 
+#### Hearing every board from one session
+
+A session opened at the workspace root hears only the catch-all's drift. A
+scoped board's empty horizon, or its hotfix queue, reaches only a session
+opened inside that board's directory. The catch-all can list its siblings so
+that one session hears them all:
+
+```toml
+# Optional, on the CATCH-ALL board only. Directories, relative to this file,
+# that each hold their own roadmap.toml. The session-start check (and
+# `roadmap check`) run from this directory then report every listed board,
+# each on its own throttle, not just this one. The text board and --json of
+# a board never change. Cannot be combined with scoped = true: the board
+# that lists the others is the catch-all.
+# boards = ["other-app", "third-app"]
+boards = ["other-app", "third-app"]
+```
+
+The board that lists the others is the catch-all, so `boards` together with
+`scoped = true` is refused. Each listed directory must hold its own
+`roadmap.toml`. Entries are compared by their real path, so the catch-all's
+own directory (by any spelling) and a repeated directory are refused at load.
+
+The report is the catch-all's lines as today, then one block per listed board
+that has something to say, headed
+`-- other-app  ·  <dir>  ·  full board: cd <dir> && roadmap`. A listed board
+with nothing to say adds nothing. Listed boards run in parallel, and the
+check still prints a single report. Each listed board is judged on its own
+state file, beside its own `roadmap.toml`, so one board's report never resets
+another's throttle.
+
+Three problem lines appear under the catch-all, in the order the boards are
+listed:
+
+- `boards: other-app listed, no roadmap.toml there`: the directory has no
+  `roadmap.toml`.
+- `boards: other-app unavailable: <reason>`: the board could not be read
+  (bad config, `bd` down, a timeout, no usable output).
+- `two catch-all boards: other-app repeats every unowned row -- add scoped = true`:
+  the listed board is unscoped and uses the same `bd` workspace as the
+  catch-all, so both show every unlabelled row.
+
+These repeat every three days, like scope creep, not every session. A listed
+board that is unscoped but uses a *different* workspace is fine: it is
+another database's catch-all. Listing is one level only; a listed board's own
+`boards` key is never followed.
+
+**Update the install before adding the key.** A `roadmap` older than 0.8.0
+refuses `boards` by name and prints `roadmap: unavailable: … unknown key(s):
+boards` when run by hand, and the catch-all's session-start check goes
+silent, exactly as the 0.7.0 note above says for `scoped`.
+
 ### The SessionStart hook
 
 The plugin runs a check when each Claude Code session starts. **When nothing
@@ -388,7 +444,7 @@ needs attention it prints nothing.** When something does, it prints a short
 `ROADMAP CADENCE CHECK` block naming each condition and the command to fix
 it. Two conditions are gentle nudges, scope creep and a low on-plan share,
 and those print at most once every three days (set
-`ROADMAP_CADENCE_DAYS` to change that). Everything else repeats every
+`ROADMAP_CADENCE_DAYS` to change that). When the catch-all's `roadmap.toml` lists `boards`, the check also covers every listed board, each on its own throttle, under a `-- <name>` header. Everything else repeats every
 session until fixed, including a hotfix queue that holds a priority-0/1
 issue. The same conditions appear at the bottom of the full board, so
 `/roadmap` is always the place to look closer.
@@ -447,7 +503,7 @@ output verbatim".
 `roadmap check` runs the same check as the Claude Code session-start hook
 and prints it as plain text. It prints **nothing** when the board is fine,
 and it shares the hook's throttle and once-only messages, kept in the state
-file beside `roadmap.toml`. Where to run it:
+file beside `roadmap.toml`. With `boards` in the catch-all's config, `roadmap check` reports every listed board too. Where to run it:
 
 - **Your agent's session-start hook, if it has one.** Check whether the tool
   passes a hook's output to the model; if it doesn't, the agent never sees

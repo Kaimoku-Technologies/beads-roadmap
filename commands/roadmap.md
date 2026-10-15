@@ -33,7 +33,7 @@ Run the roadmap board and report it.
 - A version like `v1.2.0` → `roadmap v1.2.0`
 - `--version` → `roadmap --version` — the plugin version and the path of the
   binary that answered. Works without a `roadmap.toml`.
-- `check` → `roadmap check` — the session-start drift check as plain text.
+- `check` → `roadmap check` — the session-start drift check as plain text (every listed board too, when the catch-all lists them).
   EMPTY output means nothing needs attention; report that, not a blank.
 - `pin <version>` → `roadmap pin <version>`, which
   re-baselines that version's scope-creep snapshot. Only run this when the

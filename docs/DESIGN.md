@@ -140,6 +140,11 @@ from its normal throttle stamp, never repeating even though the underlying
 condition persists — telling the user to run `roadmap init`. Every other
 `unavailable` reason stays silent through the hook, unconditionally.
 
+A second exception (github-7jn0v): a board the catch-all lists and that is
+missing or unreadable is reported as a line under the catch-all rather than
+silenced — listing it is the user asking to be told. The catch-all itself
+still fails open; if it cannot be read there is no list.
+
 Below the Python floor (3.11, for stdlib `tomllib`), the same contract
 applies even before the config loader runs: a version check ahead of
 `import tomllib` prints `roadmap: unavailable: ...` naming both the
@@ -187,5 +192,19 @@ config cannot detect it: a scoped board cannot tell "owned by nobody" from
 "owned by the catch-all by convention", so a count of "rows not mine" would
 reintroduce the very leak this fixes, in count form. The constraint is
 documented and scoped boards are marked visibly (header `· scoped`, JSON
-`scoped: true`). Detection belongs with the multi-product hook work
-(github-7jn0v), the first thing that would read more than one `roadmap.toml`.
+`scoped: true`). The catch-all therefore **lists** its siblings (`boards`, github-7jn0v). Only
+the hook reads the list; the board and `--json` of every board are unchanged
+apart from the added `workspace` key. Each listed board runs under its own
+`ROADMAP_CONFIG`, in parallel, and is judged on its own state file, so one
+board's report never resets another's throttle.
+
+The list is explicit because a glob reports boards nobody asked about, from a
+cwd the hook does not control, and has no answer for a sibling checkout
+outside the root. `boards` and `scoped` exclude each other: a board that
+reads more than one config is, structurally, the catch-all. 0.7.0 could only
+document that property; it is now enforced in the one place that can check
+it, `load_config`.
+
+What the catch-all can now detect among its listed boards is a second
+unscoped board on the same workspace, compared by real path. What it still
+cannot detect is an unlisted one.
