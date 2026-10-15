@@ -583,6 +583,306 @@ check('exact: the single-board JSON additionalContext is byte-identical',
 rc, out, _ = run_hook(fake_roadmap(BYPASS.replace('v0.16.0', 'v0.17.0')), extra=['--text'])
 check('exact: a different payload is not equal (control)', out != _EXACT_BYPASS + '\n')
 
+# --- github-7jn0v: the catch-all LISTS its sibling boards ----------------------
+# ONE ROADMAP_CADENCE_BIN plays every board: the stub answers by the
+# ROADMAP_CONFIG the hook set for a listed board, and by None for the
+# catch-all, whose run inherits the hook's env -- so the suite's own
+# ROADMAP_CONFIG, if a developer's shell had one, is dropped first.
+# Nothing here touches bd.
+os.environ.pop('ROADMAP_CONFIG', None)
+
+
+def fake_roadmap_boards(by_config, rc=0):
+    """A stub that prints by_config[os.environ.get('ROADMAP_CONFIG')] -- the
+    catch-all's payload under the key None -- so ONE ROADMAP_CADENCE_BIN plays
+    every board of a fixture. A value is a payload string, or a dict
+    {'payload': str, 'rc': int, 'sleep': float} for a board that must fail
+    or stall. A config the table does not know exits 3 with a message on
+    stderr, so a hook that runs a listed board under the WRONG ROADMAP_CONFIG
+    reports it unavailable instead of quietly getting another board's
+    answer. Nothing here touches bd."""
+    fd, path = tempfile.mkstemp(suffix='.py')
+    os.close(fd)
+    with open(path, 'w') as fh:
+        fh.write('#!/usr/bin/env python3\nimport os, sys, time\n')
+        fh.write('TABLE = %r\n' % by_config)
+        fh.write('key = os.environ.get("ROADMAP_CONFIG")\n')
+        fh.write('if key not in TABLE:\n')
+        fh.write('    sys.stderr.write("stub: unknown ROADMAP_CONFIG %r\\n" % (key,))\n')
+        fh.write('    sys.exit(3)\n')
+        fh.write('spec = TABLE[key]\n')
+        fh.write('if isinstance(spec, str):\n    spec = {"payload": spec}\n')
+        fh.write('time.sleep(spec.get("sleep", 0))\n')
+        fh.write('sys.stdout.write(spec["payload"])\n')
+        fh.write('sys.exit(spec.get("rc", %d))\n' % rc)
+    os.chmod(path, 0o755)
+    return path
+
+
+def listed_board(name, **payload):
+    """-> (entry, payload_json): a listed board in its own temp dir with a real
+    (empty) roadmap.toml, so `exists` is honest, and its own state_path inside
+    that dir -- the per-board file the hook must judge it on."""
+    d = tempfile.mkdtemp()
+    cfg = os.path.join(d, 'roadmap.toml')
+    open(cfg, 'w').close()
+    payload.setdefault('state_path', os.path.join(d, '.roadmap-state.json'))
+    payload.setdefault('conditions', [])
+    return {'name': name, 'config_path': cfg, 'exists': True}, json.dumps(payload)
+
+
+def catch_all(boards, workspace='/ws/acme-app', **payload):
+    """-> the catch-all's payload JSON naming `boards`. workspace=None omits
+    the key (an older or stubbed producer)."""
+    payload.setdefault('conditions', [])
+    payload['boards'] = list(boards)
+    if workspace is not None:
+        payload['workspace'] = workspace
+    return json.dumps(payload)
+
+
+def seed_stamp(path, age=0.0):
+    """Write last_reported_at = now - age (fresh by default: THROTTLED)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    value = time.time() - age
+    with open(path, 'w') as fh:
+        json.dump({'last_reported_at': value}, fh)
+    return value
+
+
+def stamp_of(path):
+    try:
+        with open(path) as fh:
+            return json.load(fh).get('last_reported_at')
+    except Exception:
+        return None
+
+
+def fresh_state():
+    fd, path = tempfile.mkstemp(suffix='.json')
+    os.close(fd)
+    os.unlink(path)
+    return path
+
+
+CREEP = [{'id': 2, 'bypass': False, 'lines': ['SCOPE CREEP -- v0.16.0 grew.']}]
+HORIZON = [{'id': 1, 'bypass': True, 'lines': ['HORIZON EMPTY -- nothing tagged above v0.16.0.']}]
+OTHER_CREEP = [{'id': 2, 'bypass': False, 'lines': ['SCOPE CREEP -- other-app v1.1.0 grew.']}]
+MISSING = {'name': 'third-app',
+           'config_path': os.path.join(tempfile.mkdtemp(), 'roadmap.toml'), 'exists': False}
+
+# 1. INDEPENDENT THROTTLES: each board on ITS OWN stamp, both directions in
+# two runs, and the silent board's file is never written.
+_e1, _p1 = listed_board('other-app', conditions=OTHER_CREEP)
+_st1 = json.loads(_p1)['state_path']
+_stub1 = fake_roadmap_boards({None: catch_all([_e1], conditions=CREEP), _e1['config_path']: _p1})
+_seed1 = seed_stamp(_st1)                                   # other-app throttled, catch-all fresh
+rc, out1, _ca1 = run_hook(_stub1)
+check('throttles: the catch-all speaks on its fresh stamp', 'SCOPE CREEP -- v0.16.0 grew.' in out1)
+check('throttles: the seeded listed board has no block (must-miss)', '-- other-app' not in out1)
+check('throttles: ...and its creep line is absent', 'other-app v1.1.0' not in out1)
+check('throttles: the silent board\'s stamp was NOT rewritten', stamp_of(_st1) == _seed1)
+check('throttles: the speaking board\'s stamp was written', (stamp_of(_ca1) or 0) > _seed1 - 1)
+check('throttles: exits 0', rc == 0)
+os.unlink(_st1)                                             # swap: catch-all throttled, other-app fresh
+_ca2 = fresh_state()
+_seed2 = seed_stamp(_ca2)
+rc, out2, _ = run_hook(_stub1, state=_ca2)
+check('throttles (swapped): the listed board\'s block is present (must-hit)', '-- other-app' in out2)
+check('throttles (swapped): ...with its creep line', 'other-app v1.1.0' in out2)
+check('throttles (swapped): the throttled catch-all\'s line is absent', 'v0.16.0 grew' not in out2)
+check('throttles (swapped): no pointer line for an empty catch-all block',
+      'Full board: `roadmap`' not in out2)
+check('throttles (swapped): the header and footer still frame the report',
+      'ROADMAP CADENCE CHECK' in out2 and '(Throttled conditions' in out2)
+check('throttles (swapped): the catch-all\'s seeded stamp is untouched', stamp_of(_ca2) == _seed2)
+check('throttles (swapped): the listed board\'s stamp was written', (stamp_of(_st1) or 0) > 0)
+# Review focus 1 + 5 control: the header carries the name AS WRITTEN and an
+# unquoted plain directory. Read from the PARSED additionalContext: the raw
+# hook JSON escapes the header's middle dot as \u00b7.
+_dir1 = os.path.dirname(_e1['config_path'])
+check('header: name as written, directory, and an unquoted cd (control)',
+      '-- other-app  ·  %s  ·  full board: cd %s && roadmap' % (_dir1, _dir1)
+      in json.loads(out2 or '{}').get('hookSpecificOutput', {}).get('additionalContext', ''))
+
+# 2. A MISSING listed board speaks; a present CLEAN board is silent.
+_e2, _p2 = listed_board('other-app')
+_stub2 = fake_roadmap_boards({None: catch_all([_e2, MISSING]), _e2['config_path']: _p2})
+rc, out, _ = run_hook(_stub2)
+check('missing board: named', 'boards: third-app listed, no roadmap.toml there' in out)
+check('missing board: a clean present board has no block (must-miss)', '-- other-app' not in out)
+check('missing board: the catch-all pointer line still prints', 'Full board: `roadmap`' in out)
+check('missing board: the problem line sits before the pointer line',
+      'third-app listed' in out and 'Full board: `roadmap`' in out
+      and out.index('third-app listed') < out.index('Full board: `roadmap`'))
+check('missing board: exits 0', rc == 0)
+_e2b, _p2b = listed_board('third-app')
+_stub2b = fake_roadmap_boards({None: catch_all([_e2, _e2b]),
+                               _e2['config_path']: _p2, _e2b['config_path']: _p2b})
+rc, out, _ = run_hook(_stub2b)
+check('two clean listed boards and a clean catch-all -> total silence (control)', out == '')
+check('...and exits 0', rc == 0)
+# Review focus 3: EVERY listed board missing -- no pool may be created
+# (ThreadPoolExecutor(max_workers=0) raises, and the hook-wide except would
+# turn that into silence).
+rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([MISSING])}))
+check('every listed board missing: still reported (no empty pool)',
+      'boards: third-app listed, no roadmap.toml there' in out)
+
+# 3. PROBLEM LINES ride the catch-all's throttle and write ITS stamp.
+_ca3 = fresh_state()
+_seed3 = seed_stamp(_ca3)
+rc, out, _ = run_hook(_stub2, state=_ca3)
+check('problem lines: throttled with the catch-all (must-miss)', out == '')
+check('problem lines: the seeded stamp is untouched', stamp_of(_ca3) == _seed3)
+rc, out, _st3 = run_hook(_stub2)
+check('problem lines: speak on a fresh stamp (must-hit)', 'third-app listed' in out)
+check('problem lines: ...and write the catch-all stamp', (stamp_of(_st3) or 0) > 0)
+_stub3 = fake_roadmap_boards({None: catch_all([_e2, MISSING], conditions=HORIZON),
+                              _e2['config_path']: _p2})
+_ca3b = fresh_state()
+seed_stamp(_ca3b)
+rc, out, _ = run_hook(_stub3, state=_ca3b)
+check('problem lines: a bypass catch-all on a seeded stamp still speaks (control)',
+      'HORIZON EMPTY' in out)
+check('problem lines: ...but the throttled problem line stays out of it',
+      'third-app listed' not in out)
+
+# 4. An UNAVAILABLE listed board is a line with its reason -- the one
+# exception to property 4, scoped to LISTED boards.
+_e4, _p4 = listed_board('other-app')
+for _label, _spec, _reason in (
+        ('exits 1', {'payload': _p4, 'rc': 1}, 'exited 1'),
+        ('prints garbage', 'not json', 'unparseable json'),
+        ('reports unavailable', json.dumps({'unavailable': 'bd exited 1'}), 'bd exited 1'),
+        ('has no conditions key', json.dumps({'state_path': '/x'}), 'no conditions in payload'),
+        ('has no state_path', json.dumps({'conditions': []}), 'payload carries no state_path'),
+        ('is unconfigured', UNCONFIGURED, 'no roadmap.toml found')):
+    _stub4 = fake_roadmap_boards({None: catch_all([_e4]), _e4['config_path']: _spec})
+    rc, out, _ = run_hook(_stub4)
+    check('unavailable listed board (%s): named with its reason' % _label,
+          'boards: other-app unavailable: %s' % _reason in out)
+    check('unavailable listed board (%s): exits 0' % _label, rc == 0)
+check('unavailable listed board (is unconfigured): no roadmap-init NUDGE for a listed board',
+      'No roadmap.toml found -- run' not in out)
+_t4 = time.monotonic()
+_stub4t = fake_roadmap_boards({None: catch_all([_e4]), _e4['config_path']: {'payload': _p4, 'sleep': 3}})
+rc, out, _ = run_hook(_stub4t, timeout='1')
+check('unavailable listed board (times out): named',
+      'boards: other-app unavailable: timed out after 1s' in out)
+check('unavailable listed board (times out): returns well inside the suite timeout',
+      time.monotonic() - _t4 < 5)
+rc, out, _ = run_hook(fake_roadmap(UNAVAILABLE_ORDINARY))
+check('the catch-all\'s OWN unavailable payload is still silent (I8 control)', out.strip() == '')
+# Review focus 4: two slow boards run in PARALLEL -- one timeout, not the sum.
+_e4a, _p4a = listed_board('other-app')
+_e4b, _p4b = listed_board('third-app')
+_stub4p = fake_roadmap_boards({None: catch_all([_e4a, _e4b]),
+                               _e4a['config_path']: {'payload': _p4a, 'sleep': 3},
+                               _e4b['config_path']: {'payload': _p4b, 'sleep': 3}})
+_t4p = time.monotonic()
+rc, out, _ = run_hook(_stub4p, timeout='1')
+_elapsed = time.monotonic() - _t4p
+check('parallel: both slow boards are reported', out.count('timed out after 1s') == 2)
+check('parallel: wall time is one timeout, not the sum (%.2fs)' % _elapsed, _elapsed < 2.0)
+
+# 6. The ONCE-EVER state-move notice is per board: marker in ITS file.
+_e6, _p6 = listed_board('other-app', legacy_state_available=True)
+_st6 = json.loads(_p6)['state_path']
+_stub6 = fake_roadmap_boards({None: catch_all([_e6]), _e6['config_path']: _p6})
+rc, out, _ca6 = run_hook(_stub6)
+check('per-board notice: the listed board\'s block carries it',
+      '-- other-app' in out and 'ROADMAP STATE MOVED' in out)
+check('per-board notice: names ITS state path', _st6 in out)
+check('per-board notice: no CADENCE header for a notice-only report',
+      'ROADMAP CADENCE CHECK' not in out)
+_after6 = json.load(open(_st6)) if os.path.exists(_st6) else {}
+check('per-board notice: marker in the listed board\'s file',
+      _after6.get('legacy_state_reported') is True)
+check('per-board notice: no stamp consumed', not _after6.get('last_reported_at'))
+check('per-board notice: NOT in the catch-all\'s file',
+      not (os.path.exists(_ca6) and json.load(open(_ca6)).get('legacy_state_reported')))
+rc, out, _ = run_hook(_stub6, state=_ca6)
+check('per-board notice: speaks once', out == '')
+
+# 7. NO --state leaks to a listed board: the catch-all's argv carries the
+# forced path, the listed board's carries --json only, under ITS config.
+def _record_env_stub(capture_dir, by_config):
+    """fake_roadmap_boards that first writes {'argv': sys.argv, 'config':
+    $ROADMAP_CONFIG} to capture_dir/<pid>.json -- one file per invocation,
+    so the parallel listed runs never interleave."""
+    fd, path = tempfile.mkstemp(suffix='.py')
+    os.close(fd)
+    with open(path, 'w') as fh:
+        fh.write('#!/usr/bin/env python3\nimport os, sys, json\n')
+        fh.write('open(os.path.join(%r, "%%d.json" %% os.getpid()), "w").write(json.dumps(\n'
+                 '    {"argv": sys.argv, "config": os.environ.get("ROADMAP_CONFIG")}))\n' % capture_dir)
+        fh.write('TABLE = %r\n' % by_config)
+        fh.write('sys.stdout.write(TABLE.get(os.environ.get("ROADMAP_CONFIG"), ""))\n')
+        fh.write('sys.exit(0)\n')
+    os.chmod(path, 0o755)
+    return path
+
+
+_cap = tempfile.mkdtemp()
+_e7, _p7 = listed_board('other-app')
+_forced7 = fresh_state()
+run_hook(_record_env_stub(_cap, {None: catch_all([_e7]), _e7['config_path']: _p7}), state=_forced7)
+_recs = [json.load(open(os.path.join(_cap, f))) for f in os.listdir(_cap)]
+_by_cfg = {r['config']: r['argv'] for r in _recs}
+check('state leak: both boards ran (control)', set(_by_cfg) == {None, _e7['config_path']})
+_ca_argv = _by_cfg.get(None)
+_lb_argv = _by_cfg.get(_e7['config_path'])
+check('state leak: the catch-all carries --state <forced>',
+      _ca_argv is not None and '--state' in _ca_argv
+      and _ca_argv[_ca_argv.index('--state') + 1] == _forced7)
+check('state leak: the listed board carries --json only',
+      _lb_argv is not None and _lb_argv[1:] == ['--json'])
+
+# 8. ONE JSON object, blocks in the spec's order; --text opens with the banner.
+_e8, _p8 = listed_board('other-app', conditions=OTHER_CREEP)
+_stub8 = fake_roadmap_boards({None: catch_all([_e8], conditions=CREEP), _e8['config_path']: _p8})
+rc, out, _ = run_hook(_stub8)
+_obj8 = json.loads(out or '{}')
+check('two-board: one JSON object', _obj8.get('hookSpecificOutput', {}).get('hookEventName') == 'SessionStart')
+_ctx8 = _obj8.get('hookSpecificOutput', {}).get('additionalContext', '')
+check('two-board: exactly one CADENCE header', _ctx8.count('ROADMAP CADENCE CHECK') == 1)
+check('two-board: exactly one footer', _ctx8.count('(Throttled conditions') == 1)
+check('two-board: catch-all line, pointer, then the listed header, in that order',
+      'v0.16.0 grew' in _ctx8 and 'Full board: `roadmap`' in _ctx8 and '-- other-app' in _ctx8
+      and _ctx8.index('v0.16.0 grew') < _ctx8.index('Full board: `roadmap`') < _ctx8.index('-- other-app'))
+check('two-board: the listed board\'s line is under its header',
+      '-- other-app' in _ctx8 and 'other-app v1.1.0' in _ctx8
+      and _ctx8.index('-- other-app') < _ctx8.index('other-app v1.1.0'))
+_e8t, _p8t = listed_board('other-app', conditions=OTHER_CREEP)
+_stub8t = fake_roadmap_boards({None: catch_all([_e8t], conditions=CREEP), _e8t['config_path']: _p8t})
+rc, out, _ = run_hook(_stub8t, extra=['--text'])
+check('two-board --text: opens with the banner', out.startswith('ROADMAP CADENCE CHECK'))
+check('two-board --text: carries both boards', 'v0.16.0 grew' in out and '-- other-app' in out)
+
+# 9. The catch-all is the single point of silence: unreadable -> no list.
+_e9, _p9 = listed_board('other-app', conditions=OTHER_CREEP)
+_stub9 = fake_roadmap_boards({None: {'payload': catch_all([_e9], conditions=CREEP), 'rc': 1},
+                              _e9['config_path']: _p9})
+rc, out, _ = run_hook(_stub9)
+check('catch-all exits 1: everything silent, listed board included', out == '')
+check('catch-all exits 1: exits 0', rc == 0)
+
+# Review focus 5: a name or directory with a space / non-ASCII.
+_d_sp = os.path.join(tempfile.mkdtemp(), 'my app')
+os.makedirs(_d_sp)
+_cfg_sp = os.path.join(_d_sp, 'roadmap.toml')
+open(_cfg_sp, 'w').close()
+_e_sp = {'name': 'café app', 'config_path': _cfg_sp, 'exists': True}
+_p_sp = json.dumps({'state_path': os.path.join(_d_sp, '.roadmap-state.json'), 'conditions': OTHER_CREEP})
+rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e_sp]), _cfg_sp: _p_sp}))
+_ctx_sp = json.loads(out or '{}').get('hookSpecificOutput', {}).get('additionalContext', '')
+check('header: the name is printed as written, non-ASCII intact',
+      '-- café app  ·  %s' % _d_sp in _ctx_sp)
+check('header: a directory with a space is shell-quoted in the cd target',
+      "full board: cd '%s' && roadmap" % _d_sp in _ctx_sp)
+
+
 if FAILURES:
     print('FAIL (%d)' % len(FAILURES))
     for f in FAILURES:

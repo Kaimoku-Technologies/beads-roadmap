@@ -23,12 +23,18 @@ FIVE PROPERTIES, each of which is a way this could fail
    exist, and an unversioned P0/P1 is a planning bug. The two once-ever
    messages above bypass the throttle too -- it governs how often drift is
    RE-reported, and a message that is delivered once has nothing to repeat.
-3. READ-ONLY, ALWAYS. It runs `bin/roadmap --json` -- once per board, judged by
-   board_report (github-7jn0v) -- and nothing else. It never
-   applies a label. The suite walks this file's AST for argv list literals
-   and checks them against a set of write verbs.
+3. READ-ONLY, ALWAYS. It runs `bin/roadmap --json` -- once for this board
+   and once per board the catch-all's `boards` key LISTS (github-7jn0v) --
+   and nothing else. It never applies a label. The suite walks this file's
+   AST for argv list literals and checks them against a set of write verbs.
 4. FAILS OPEN, ALWAYS. Missing binary, non-zero exit, unparseable JSON,
-   timeout -- every path exits 0 with no output.
+   timeout -- every path exits 0 with no output. ONE deliberate exception
+   (github-7jn0v): a board the catch-all LISTS and that is missing,
+   unreadable or a second catch-all is reported as a line under the
+   catch-all -- listing a board is the user asking to be told when it
+   breaks, and a silent listed board would be the false-clean this tool
+   exists to refuse. The catch-all itself still fails open: if IT cannot be
+   read there is no list, and the hook is silent.
 5. IT REPORTS; A HUMAN PLANS. The message carries the whole remediation,
    including that `bd label add` takes the label LAST and prints an error
    while EXITING 0 when it does not.
@@ -47,8 +53,10 @@ Testing seams (used by test_roadmap_cadence.py, harmless in production):
     ROADMAP_CADENCE_DAYS     throttle interval in days
     ROADMAP_CADENCE_TIMEOUT  subprocess timeout in seconds
 """
+import concurrent.futures
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -232,6 +240,92 @@ def board_report(payload, state, days):
     return prelude, body, True
 
 
+def _run_board(binary, entry, timeout):
+    """Pool worker for ONE listed board (github-7jn0v): -> (payload, None) or
+    (None, reason). Every failure is a RETURNED reason, never a raise -- a
+    raise would surface from .result() on the main thread, trip the
+    hook-wide `except Exception: sys.exit(0)` and silence every board.
+    Never --state: that seam is the catch-all's; the listed board's binary
+    resolves its own default state path beside its config."""
+    try:
+        argv = [sys.executable, binary, '--json']
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                           env=dict(os.environ, ROADMAP_CONFIG=entry['config_path']))
+    except subprocess.TimeoutExpired:
+        return None, 'timed out after %ds' % timeout
+    except Exception as exc:
+        return None, str(exc) or exc.__class__.__name__
+    if p.returncode != 0:
+        return None, 'exited %d' % p.returncode
+    try:
+        payload = json.loads(p.stdout or '{}')
+    except Exception:
+        return None, 'unparseable json'
+    if not isinstance(payload, dict):
+        return None, 'unparseable json'
+    if payload.get('unavailable') or payload.get('unconfigured'):
+        # A listed board cannot be unconfigured (ROADMAP_CONFIG names a file
+        # the catch-all said exists); a payload claiming so is unavailable.
+        return None, str(payload.get('unavailable') or 'unconfigured')
+    if 'conditions' not in payload:       # the KEY: conditions: [] is a clean board
+        return None, 'no conditions in payload'
+    if not payload.get('state_path'):
+        # Falling back to LEGACY_STATE would share one stamp across boards --
+        # the cross-board reset this design forbids.
+        return None, 'payload carries no state_path'
+    return payload, None
+
+
+def run_listed(binary, boards, timeout):
+    """-> [(entry, payload, line)] in LIST order; exactly one of payload /
+    line is None, and `line` is a finished problem line (github-7jn0v).
+    Subprocesses run in a pool sized to the boards that exist; nothing
+    here reads or writes a state file. An `exists: false` entry never
+    runs (shape a). The pool is created only when something will run:
+    ThreadPoolExecutor(max_workers=0) raises, and the hook-wide except
+    would turn that into the silent listed board this design refuses."""
+    boards = [b for b in boards if isinstance(b, dict) and b.get('name') is not None]
+    todo = [(i, b) for i, b in enumerate(boards) if b.get('exists') and b.get('config_path')]
+    results = {}
+    if todo:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(todo)) as pool:
+            futures = {pool.submit(_run_board, binary, b, timeout): i for i, b in todo}
+            for f in concurrent.futures.as_completed(futures):
+                results[futures[f]] = f.result()
+    outcomes = []
+    for i, b in enumerate(boards):
+        if i not in results:
+            outcomes.append((b, None, 'boards: %s listed, no roadmap.toml there' % b['name']))
+            continue
+        payload, reason = results[i]
+        if payload is None:
+            outcomes.append((b, None, 'boards: %s unavailable: %s' % (b['name'], reason)))
+        else:
+            outcomes.append((b, payload, None))
+    return outcomes
+
+
+def problem_lines(catch_payload, outcomes):
+    """The listed-board problem lines in list order (github-7jn0v). They are
+    ONE non-bypass pseudo-condition of the catch-all: dropped when it is
+    throttled, and when they print the catch-all's stamp is written -- a
+    missing board is re-reported every `days`, like scope creep, not every
+    session like an empty horizon."""
+    lines = []
+    for entry, payload, line in outcomes:
+        if line is not None:
+            lines.append(line)
+    return lines
+
+
+def board_header(entry):
+    """`-- <name as written>  ·  <dir>  ·  full board: cd <dir> && roadmap`.
+    The cd target is shell-quoted because a human pastes it; shlex.quote
+    leaves a plain path untouched, so the usual case reads as before."""
+    d = os.path.dirname(entry['config_path'])
+    return '-- %s  ·  %s  ·  full board: cd %s && roadmap' % (entry['name'], d, shlex.quote(d))
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     plain = '--text' in argv
@@ -278,6 +372,18 @@ def main(argv=None):
     # is that a SECOND never-configured workspace is not nudged again.
     state = forced_state or payload.get('state_path') or LEGACY_STATE
 
+    # github-7jn0v: the catch-all may LIST its sibling boards. Run each now --
+    # in parallel, each under its own ROADMAP_CONFIG, never with --state --
+    # BEFORE any state is read, so every stamp read and write below happens
+    # on this thread, in list order. A listed board that cannot be run is a
+    # line under the catch-all: the one deliberate exception to property 4.
+    # The catch-all's own `boards` is the only list read (one level).
+    outcomes = run_listed(binary, payload.get('boards') or (), timeout)
+    problems = problem_lines(payload, outcomes)
+    if problems:
+        payload['conditions'] = list(payload.get('conditions') or []) + [
+            {'id': 'boards', 'bypass': False, 'lines': problems}]
+
     # C1 (github-kkq4a): the once-ever state-move notice and the throttle are
     # judged per board by board_report (github-7jn0v); the comments that
     # lived here moved with the code. Collected into a list rather than
@@ -301,18 +407,40 @@ def main(argv=None):
                 'after that until the file exists.)')
             mark_nudged(state)
 
+    # One block per listed board with something to say, in list order; its
+    # once-ever notice goes INSIDE its block, under its header. The
+    # catch-all's block keeps today's unheaded form: the session is in or
+    # under its directory, so the unheaded block is "here" and the headed
+    # ones are "elsewhere" -- which is also what makes byte-identity free.
+    blocks = []                      # (lines, state path to stamp or None)
+    for entry, listed, _line in outcomes:
+        if listed is None:
+            continue
+        pre_i, body_i, stamp_i = board_report(listed, listed['state_path'], days)
+        if pre_i or stamp_i:
+            blocks.append(([board_header(entry)] + pre_i + body_i,
+                           listed['state_path'] if stamp_i else None))
+
+    speaking = stamp or any(st_i for _, st_i in blocks)
     lines = list(prelude)
-    if stamp:
+    if speaking:
         lines.append('ROADMAP CADENCE CHECK (roadmap, github-4jmwr)')
+    if stamp:
         lines.extend(body)
         lines.append('Full board: `roadmap`  ·  queue: `roadmap hotfix`')
+    for block_lines, _ in blocks:
+        lines.extend(block_lines)
+    if speaking:
         lines.append('(Throttled conditions run at most once every %g days;'
                      ' bypass conditions repeat every session.)' % days)
     if not lines:
-        return 0  # clean, throttled, or an already-reported notice -> silence
+        return 0  # nothing from any board -> silence
     emit('\n'.join(lines), plain=plain)
     if stamp:
         write_stamp(state)
+    for _, st_i in blocks:
+        if st_i:
+            write_stamp(st_i)
     return 0
 
 
