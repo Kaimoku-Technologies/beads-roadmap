@@ -2884,6 +2884,101 @@ check_type_rejected('claims without scoped = true are refused',
 check_type_rejected('claims with scoped = false are refused',
                     GOOD + 'scoped = false\nclaim_id_prefixes = ["acme-"]\n', 'scoped is not true')
 
+# --- github-7jn0v: boards -- the catch-all lists its sibling boards ---------
+# One OPTIONAL key, on the CATCH-ALL only: directories, relative to this
+# file, each holding a roadmap.toml. Only the session-start hook reads it.
+# Nothing is read from a listed board here -- `a/roadmap.toml` below is an
+# EMPTY file and still counts as present, because the catch-all's load must
+# never fail over a sibling's broken file (decision 4). Every refusal is
+# paired with a loading control.
+_bd_dir, _bd_path = write_cfg(GOOD + 'boards = ["a", "./b"]\n')
+os.makedirs(os.path.join(_bd_dir, 'a'))
+open(os.path.join(_bd_dir, 'a', 'roadmap.toml'), 'w').close()
+os.makedirs(os.path.join(_bd_dir, 'b'))
+_bd_real = os.path.realpath(_bd_dir)     # macOS /var -> /private/var, as the walk-up arm notes
+_bd_cfg = rm.load_config(_bd_path)
+check('boards: resolved in list order, name as written',
+      [e['name'] for e in _bd_cfg['boards']], ['a', './b'])
+check('boards: config_path is <dir>/roadmap.toml under the realpath base',
+      [e['config_path'] for e in _bd_cfg['boards']],
+      [os.path.join(_bd_real, 'a', 'roadmap.toml'),
+       os.path.join(_bd_real, 'b', 'roadmap.toml')])
+check('boards: exists is measured per entry (must-hit and must-miss in one load)',
+      [e['exists'] for e in _bd_cfg['boards']], [True, False])
+check('boards: loads as a tuple, like every list key', isinstance(_bd_cfg['boards'], tuple), True)
+check('boards: an absent key loads as an empty tuple (control)',
+      rm.load_config(write_cfg(GOOD)[1])['boards'], ())
+_abs_dir = tempfile.mkdtemp()
+_, _abs_path = write_cfg(GOOD + 'boards = ["%s"]\n' % _abs_dir)
+check('boards: an absolute entry resolves to itself, as written',
+      rm.load_config(_abs_path)['boards'][0]['config_path'],
+      os.path.join(_abs_dir, 'roadmap.toml'))
+# Review focus 1: a trailing slash is a spelling, not a different directory.
+_ts = rm.load_config(write_cfg(GOOD + 'boards = ["a/"]\n')[1])['boards'][0]
+check('boards: a trailing slash normalises but the name stays as written',
+      (_ts['name'], os.path.basename(os.path.dirname(_ts['config_path']))), ('a/', 'a'))
+
+check_type_rejected('boards bare string', GOOD + 'boards = "other-app"\n',
+                    'boards must be a list of strings')
+check_type_rejected('boards non-list', GOOD + 'boards = 5\n',
+                    'boards must be a list of strings')
+check_type_rejected('boards non-string element', GOOD + 'boards = [1]\n',
+                    'boards must be a list of strings')
+check_type_rejected('boards empty list', GOOD + 'boards = []\n', 'boards is empty')
+check_type_rejected('boards empty string', GOOD + 'boards = [""]\n',
+                    'boards contains an empty string')
+check_type_rejected('boards names its own directory', GOOD + 'boards = ["."]\n',
+                    "is this file's own directory")
+# Review focus 2: three other spellings of "this directory".
+check_type_rejected('boards names its own directory as "./"', GOOD + 'boards = ["./"]\n',
+                    "is this file's own directory")
+check_type_rejected('boards duplicates', GOOD + 'boards = ["a", "./a"]\n',
+                    'resolve to the same roadmap.toml')
+
+
+def _refused(label, path, needle):
+    """Like check_type_rejected, for a config whose text had to embed a path
+    only known after write_cfg() created its directory."""
+    try:
+        rm.load_config(path)
+        check(label + ' raises', 'no raise', 'RoadmapUnavailable')
+    except Exception as exc:
+        check(label + ' is RoadmapUnavailable', isinstance(exc, rm.RoadmapUnavailable), True)
+        check(label + ' names it', needle in str(exc), True)
+
+
+_sd, _sp = write_cfg(GOOD)
+with open(_sp, 'w') as _fh:            # the tempdir's NON-realpath spelling (/var/... on macOS)
+    _fh.write(GOOD + 'boards = ["%s"]\n' % _sd)
+_refused('boards names its own directory by an absolute non-realpath spelling', _sp,
+         "is this file's own directory")
+_ld, _lp = write_cfg(GOOD + 'boards = ["a", "link"]\n')
+os.makedirs(os.path.join(_ld, 'a'))
+os.symlink(os.path.join(_ld, 'a'), os.path.join(_ld, 'link'))
+_refused('boards: a symlink to a listed directory is a duplicate', _lp,
+         'resolve to the same roadmap.toml')
+# MUST-MISS control for the pair above: two DIFFERENT directories load.
+check('boards: two distinct entries load with two entries (control)',
+      len(rm.load_config(write_cfg(GOOD + 'boards = ["a", "b"]\n')[1])['boards']), 2)
+
+# boards + scoped: the board that lists the others IS the catch-all.
+_, _bs = write_cfg(GOOD + 'scoped = true\nboards = ["a"]\n')
+try:
+    rm.load_config(_bs)
+    check('boards with scoped = true raises', 'no raise', 'RoadmapUnavailable')
+except Exception as _exc:
+    check('boards with scoped = true is RoadmapUnavailable',
+          isinstance(_exc, rm.RoadmapUnavailable), True)
+    check('boards with scoped = true names BOTH keys',
+          'boards' in str(_exc) and 'scoped' in str(_exc), True)
+    check('boards with scoped = true says which board lists the others',
+          'catch-all' in str(_exc), True)
+check('boards with scoped = false loads (control)',
+      rm.load_config(write_cfg(GOOD + 'scoped = false\nboards = ["a"]\n')[1])['scoped'], False)
+# `scoped = true` alone still loads: the 0.7.0 arm above. The claim_* type
+# arms above keep their 'must be a list of strings' messages: that is the
+# byte-identity guard for extracting _require_str_list.
+
 # --- github-bjxle: who OWNS an unlabelled row -------------------------------
 # bd rows carry no repo field. On a shared database an unlabelled row is owned
 # by this namespace when (1) it carries this namespace's release/backlog label,
