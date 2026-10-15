@@ -1194,8 +1194,12 @@ def _version_block(model, v, lines, cap=None, features_only=False):
 def render_json(model, conditions, cfg=None):
     cfg = cfg or CONFIG
     v = lambda x: _fmt_v(x) if x else None
-    return json.dumps({
+    out = {
         'repo': cfg['release_namespace'],
+        # github-7jn0v: the resolved workspace, ALWAYS -- the hook compares a
+        # listed board's to the catch-all's to spot a second catch-all, and a
+        # conditional key would make that depend on which side carried it.
+        'workspace': cfg.get('workspace'),
         'cut': v(model.get('cut')),
         'in_flight': v(model.get('in_flight')),
         'planned': [_fmt_v(x) for x in model.get('planned') or []],
@@ -1221,7 +1225,15 @@ def render_json(model, conditions, cfg=None):
         'conditions': conditions,
         'state_path': model.get('state_path'),
         'legacy_state_available': bool(model.get('legacy_state_available')),
-    }, indent=2)
+    }
+    # github-7jn0v: only the catch-all that LISTS boards carries the key. A
+    # config without it produces a payload without it -- absent and empty
+    # must stay distinguishable, and TEST_CFG / probe_layout's config have
+    # no key at all.
+    boards = cfg.get('boards')
+    if boards:
+        out['boards'] = [dict(e) for e in boards]
+    return json.dumps(out, indent=2)
 
 
 def render_board(model, conditions, cfg=None):

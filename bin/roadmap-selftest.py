@@ -1308,6 +1308,31 @@ with tempfile.TemporaryDirectory() as _d:
     check('--json reports the resolved state path',
           json.loads(_out).get('state_path'), _sp)
 
+# --- github-7jn0v: --json carries `workspace` ALWAYS and `boards` only when
+# the config has the key. `boards` is what the hook iterates; `workspace` is
+# what it compares to spot a second catch-all. Hand-built configs (TEST_CFG,
+# probe_layout's) have neither key, so cfg.get() is the only read.
+_BD_ENTRIES = ({'name': 'other-app', 'config_path': '/nonexistent/workspace/other-app/roadmap.toml',
+                'exists': False},)
+with tempfile.TemporaryDirectory() as _d:
+    _rc, _out, _err = _run_main(['--json', '--state', os.path.join(_d, 's.json'),
+                                 '--today', '2026-11-01'],
+                                open_issues=[], closed_issues=[], tag_dates=[],
+                                cfg=dict(TEST_CFG, boards=_BD_ENTRIES))
+    _pl_boards = json.loads(_out)
+    check('--json: boards emitted when configured, three keys per entry',
+          _pl_boards.get('boards'), [dict(e) for e in _BD_ENTRIES])
+    check('--json: workspace is the loaded value (listing config)',
+          _pl_boards.get('workspace'), TEST_CFG['workspace'])
+    _rc, _out, _err = _run_main(['--json', '--state', os.path.join(_d, 't.json'),
+                                 '--today', '2026-11-01'],
+                                open_issues=[], closed_issues=[], tag_dates=[])
+    _pl_plain = json.loads(_out)
+    check('--json: NO boards key at all without the config key (must-miss control)',
+          'boards' in _pl_plain, False)
+    check('--json: workspace is unconditional', _pl_plain.get('workspace'),
+          TEST_CFG['workspace'])
+
 # I2 (github-kkq4a): roadmap.toml's convention_start must seed an ABSENT state
 # file. load_state alone seeds its `today` argument, so before the fix every
 # install that started from an absent state file (i.e. every install, once the
