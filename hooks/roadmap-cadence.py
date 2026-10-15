@@ -23,7 +23,8 @@ FIVE PROPERTIES, each of which is a way this could fail
    exist, and an unversioned P0/P1 is a planning bug. The two once-ever
    messages above bypass the throttle too -- it governs how often drift is
    RE-reported, and a message that is delivered once has nothing to repeat.
-3. READ-ONLY, ALWAYS. It runs `bin/roadmap --json` and nothing else. It never
+3. READ-ONLY, ALWAYS. It runs `bin/roadmap --json` -- once per board, judged by
+   board_report (github-7jn0v) -- and nothing else. It never
    applies a label. The suite walks this file's AST for argv list literals
    and checks them against a set of write verbs.
 4. FAILS OPEN, ALWAYS. Missing binary, non-zero exit, unparseable JSON,
@@ -42,7 +43,7 @@ once-ever markers are shared, so the two forms can never disagree.
 
 Testing seams (used by test_roadmap_cadence.py, harmless in production):
     ROADMAP_CADENCE_BIN      path to the roadmap executable
-    ROADMAP_CADENCE_STATE    path to the stamp file
+    ROADMAP_CADENCE_STATE    path to the stamp file -- the CATCH-ALL's only (github-7jn0v); a listed board is always judged on the state_path its own payload names
     ROADMAP_CADENCE_DAYS     throttle interval in days
     ROADMAP_CADENCE_TIMEOUT  subprocess timeout in seconds
 """
@@ -189,6 +190,48 @@ def legacy_lines(state_path):
     ]
 
 
+def board_report(payload, state, days):
+    """ONE board's judgement on ITS OWN state file (github-7jn0v):
+    -> (prelude, body, stamp).
+
+    prelude: the once-ever state-move notice, keyed on legacy_state_reported
+             in THIS file; body: the condition lines that survive THIS
+             board's throttle; stamp: whether any condition survived --
+             exactly when the single-board hook wrote its stamp. Called once
+             for the catch-all and once per listed board. Nothing here reads
+             or writes another board's file: that is what keeps the throttles
+             independent, and why a listed board is never handed the
+             catch-all's forced state."""
+    # C1 (github-kkq4a): 0.2.0 moved the state file and deliberately does NOT
+    # migrate it -- auto-seeding would hand every workspace the same baselines.
+    # The binary announces that on stderr, which this hook discards
+    # (capture_output=True, and p.stderr is never read), and the same run
+    # creates the new state file, so the binary's own notice never prints
+    # again either. additionalContext is the only channel that reaches a
+    # session, so the message is re-emitted here, once, on its own marker.
+    prelude = []
+    if payload.get('legacy_state_available') and not already_legacy_reported(state):
+        prelude = legacy_lines(payload.get('state_path') or state)
+        mark_legacy_reported(state)
+    conditions = payload.get('conditions') or []
+    if not conditions:
+        return prelude, [], False
+    bypass = any(c.get('bypass') for c in conditions)
+    throttled = (time.time() - read_stamp(state)) < days * 86400
+    if throttled and not bypass:
+        # The state-move notice is bypass-class and must not be swallowed by
+        # the throttle: it governs how often DRIFT is re-reported, and this
+        # is a one-time message. The throttled condition stays silent and no
+        # stamp is written, exactly as before.
+        return prelude, [], False
+    body = []
+    for c in conditions:
+        if throttled and not c.get('bypass'):
+            continue
+        body.extend(c.get('lines') or [])
+    return prelude, body, True
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     plain = '--text' in argv
@@ -235,65 +278,41 @@ def main(argv=None):
     # is that a SECOND never-configured workspace is not nudged again.
     state = forced_state or payload.get('state_path') or LEGACY_STATE
 
-    # C1 (github-kkq4a): 0.2.0 moved the state file and deliberately does NOT
-    # migrate it -- auto-seeding would hand every workspace the same baselines.
-    # The binary announces that on stderr, which this hook discards
-    # (capture_output=True, and p.stderr is never read), and the same run
-    # creates the new state file, so the binary's own notice never prints
-    # again either. additionalContext is the only channel that reaches a
-    # session, so the message is re-emitted here, once, on its own marker.
-    #
-    # Collected into a list rather than emitted on the spot: emit() writes one
-    # JSON object on stdout and a second object would not parse.
-    prelude = []
-    if payload.get('legacy_state_available') and not already_legacy_reported(state):
-        prelude = legacy_lines(payload.get('state_path') or state)
-        mark_legacy_reported(state)
-
-    conditions = payload.get('conditions')
-    if not conditions:
+    # C1 (github-kkq4a): the once-ever state-move notice and the throttle are
+    # judged per board by board_report (github-7jn0v); the comments that
+    # lived here moved with the code. Collected into a list rather than
+    # emitted on the spot: emit() writes one JSON object on stdout and a
+    # second object would not parse.
+    prelude, body, stamp = board_report(payload, state, days)
+    if not payload.get('conditions'):
         # I8: `unconfigured` is the ONE unavailable reason that
         # unambiguously means setup was never run at all (no roadmap.toml
         # anywhere), not that the board is broken -- every OTHER
         # unavailable reason (bd down, a malformed config) stays silent
         # here, matching property 4. This is the single exception, and it
-        # speaks only ONCE per state file (a dedicated marker, not the
-        # normal throttle stamp) so a fresh, never-configured install is
-        # not silent forever, without turning into a permanent nag either.
+        # speaks only ONCE per state file (a dedicated marker, not the normal
+        # throttle stamp) so a fresh, never-configured install is not silent
+        # forever, without turning into a permanent nag either. Consulted for
+        # the catch-all only: a LISTED board cannot be unconfigured.
         if payload.get('unconfigured') and not already_nudged(state):
             prelude.append(
                 'No roadmap.toml found -- run `roadmap init` once per '
                 'workspace to set this up. (This prints once; silent '
                 'after that until the file exists.)')
             mark_nudged(state)
-        if prelude:
-            emit('\n'.join(prelude), plain=plain)
-        return 0  # clean, or an already-reported unconfigured state -> silence
-
-    bypass = any(c.get('bypass') for c in conditions)
-    throttled = (time.time() - read_stamp(state)) < days * 86400
-    if throttled and not bypass:
-        # The state-move notice is bypass-class and must not be swallowed by
-        # the 3-day throttle: that throttle governs how often DRIFT is
-        # re-reported, and this is a one-time message about state the user has
-        # to decide about. The throttled condition itself still stays silent,
-        # and no stamp is written, exactly as before.
-        if prelude:
-            emit('\n'.join(prelude), plain=plain)
-        return 0
 
     lines = list(prelude)
-    lines.append('ROADMAP CADENCE CHECK (roadmap, github-4jmwr)')
-    for c in conditions:
-        if throttled and not c.get('bypass'):
-            continue
-        lines.extend(c.get('lines') or [])
-    lines.append('Full board: `roadmap`  ·  queue: `roadmap hotfix`')
-    lines.append('(Throttled conditions run at most once every %g days;'
-                 ' bypass conditions repeat every session.)' % days)
-
+    if stamp:
+        lines.append('ROADMAP CADENCE CHECK (roadmap, github-4jmwr)')
+        lines.extend(body)
+        lines.append('Full board: `roadmap`  ·  queue: `roadmap hotfix`')
+        lines.append('(Throttled conditions run at most once every %g days;'
+                     ' bypass conditions repeat every session.)' % days)
+    if not lines:
+        return 0  # clean, throttled, or an already-reported notice -> silence
     emit('\n'.join(lines), plain=plain)
-    write_stamp(state)
+    if stamp:
+        write_stamp(state)
     return 0
 
 
