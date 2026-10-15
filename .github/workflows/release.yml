@@ -18,9 +18,10 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      # Default ref: a tag push checks out the tag itself; a manual run checks
+      # out the branch it was started from, whose CHANGELOG holds every
+      # section. (Checking out an old tag would lack .github/release-notes.py.)
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'push' && github.ref || format('refs/tags/{0}', inputs.tag) }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
