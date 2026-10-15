@@ -561,6 +561,28 @@ rc, out, _ = run_hook(_nosheb, extra=['--text'])
 check('the binary runs under the hook\'s interpreter, not its shebang',
       'HORIZON EMPTY' in out)
 
+# --- github-7jn0v: the single-board form, pinned EXACTLY ---------------------
+# The multi-board hook must degenerate to today's output when the catch-all's
+# payload carries no `boards`. Every arm above is a substring test; this one
+# is the first exact-string assertion in the suite, so a header, a directory
+# or an extra line leaking into the single-board form fails loudly rather
+# than by inspection. %g renders 3.0 as 3.
+_EXACT_BYPASS = ('ROADMAP CADENCE CHECK (roadmap, github-4jmwr)\n'
+                 'HORIZON EMPTY -- nothing tagged above v0.16.0.\n'
+                 'Full board: `roadmap`  ·  queue: `roadmap hotfix`\n'
+                 '(Throttled conditions run at most once every 3 days;'
+                 ' bypass conditions repeat every session.)')
+rc, out, _ = run_hook(fake_roadmap(BYPASS), extra=['--text'])
+check('exact: the single-board --text form is byte-identical', out == _EXACT_BYPASS + '\n')
+_, out_json, _ = run_hook(fake_roadmap(BYPASS))
+check('exact: the single-board JSON additionalContext is byte-identical',
+      json.loads(out_json or '{}').get('hookSpecificOutput', {})
+      .get('additionalContext') == _EXACT_BYPASS)
+# MUST-MISS control: the exact string is specific -- a one-character change
+# in the fixture's condition line is not equal.
+rc, out, _ = run_hook(fake_roadmap(BYPASS.replace('v0.16.0', 'v0.17.0')), extra=['--text'])
+check('exact: a different payload is not equal (control)', out != _EXACT_BYPASS + '\n')
+
 if FAILURES:
     print('FAIL (%d)' % len(FAILURES))
     for f in FAILURES:
