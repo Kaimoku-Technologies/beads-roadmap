@@ -909,6 +909,9 @@ _e5n, _p5n = listed_board('other-app', scoped=False, workspace=_ws5, conditions=
 rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e5n], workspace=None), _e5n['config_path']: _p5n}))
 check('two catch-alls: catch-all side lacks workspace -> absent (no evidence)', _TWO not in out)
 check('two catch-alls: ...and the board is still reported (control)', '-- other-app' in out)
+_e5b, _p5b = listed_board('other-app', scoped=False, conditions=OTHER_CREEP)
+rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e5b], workspace=None), _e5b['config_path']: _p5b}))
+check('two catch-alls: neither side has workspace -> absent (no evidence)', _TWO not in out)
 # The (c) line rides the catch-all's throttle like (a) and (b).
 _e5t, _p5t = listed_board('other-app', scoped=False, workspace=_ws5, conditions=OTHER_CREEP)
 _ca5t = fresh_state()
