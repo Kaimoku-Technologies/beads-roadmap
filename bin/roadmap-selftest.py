@@ -2405,6 +2405,22 @@ _RENDERED_KEYS = rm.render_json({'versions': {}, 'unscheduled': [], 'hotfix': []
 for _key in ('state_path', 'legacy_state_available', 'conditions'):
     check('the hook reads %r by the name render_json emits it' % _key,
           _key in _HOOK_SRC and ('"%s"' % _key) in _RENDERED_KEYS, True)
+# github-7jn0v: the three multi-board keys, searched QUOTED in the hook. The
+# bare word `workspace` already occurs in the hook's prose, so the bare
+# search above would pass against a hook that never reads the key. `boards`
+# is emitted only under a config that has it, so it needs its own render.
+_RENDERED_BOARDS = rm.render_json(
+    {'versions': {}, 'unscheduled': [], 'hotfix': []}, [],
+    cfg=dict(TEST_CFG, boards=({'name': 'other-app', 'config_path': '/x/other-app/roadmap.toml',
+                                'exists': False},)))
+for _key, _rendered in (('workspace', _RENDERED_KEYS), ('scoped', _RENDERED_KEYS),
+                        ('boards', _RENDERED_BOARDS)):
+    check('the hook reads %r (quoted) by the name render_json emits it' % _key,
+          ("'%s'" % _key) in _HOOK_SRC and ('"%s"' % _key) in _rendered, True)
+check('boards is absent from a render without the key (control)',
+      '"boards"' in _RENDERED_KEYS, False)
+check('a quoted key neither side uses is in neither (control)',
+      "'legacy_state_migrated'" in _HOOK_SRC, False)
 # `unconfigured` is emitted by main()'s unavailable branch, NOT by
 # render_json -- the I8 arms further up assert the producing half. Only the
 # consumer's half is pinned here, which is what this check can see.

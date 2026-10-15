@@ -883,6 +883,42 @@ check('header: a directory with a space is shell-quoted in the cd target',
       "full board: cd '%s' && roadmap" % _d_sp in _ctx_sp)
 
 
+# 5. TWO CATCH-ALLS: an unscoped listed board on the SAME workspace. Flagged,
+# and still reported as a board. Controls: scoped; a different workspace;
+# `workspace` missing from either side (no evidence, no finding); and the
+# realpath pair (macOS /var vs /private/var -- trivially equal on Linux).
+_ws5 = tempfile.mkdtemp()
+_TWO = 'two catch-all boards: other-app repeats every unowned row -- add scoped = true'
+for _label, _scoped, _listed_ws, _want in (
+        ('unscoped, same workspace', False, _ws5, True),
+        ('scoped, same workspace (control)', True, _ws5, False),
+        ('unscoped, different workspace (control)', False, tempfile.mkdtemp(), False),
+        ('unscoped, same workspace in realpath form', False, os.path.realpath(_ws5), True)):
+    _e5, _p5 = listed_board('other-app', scoped=_scoped, workspace=_listed_ws, conditions=OTHER_CREEP)
+    _stub5 = fake_roadmap_boards({None: catch_all([_e5], workspace=_ws5, conditions=CREEP),
+                                  _e5['config_path']: _p5})
+    rc, out, _ = run_hook(_stub5)
+    check('two catch-alls (%s): line %s' % (_label, 'present' if _want else 'absent'),
+          (_TWO in out) == _want)
+    check('two catch-alls (%s): the board is still reported as a board' % _label,
+          '-- other-app' in out and 'other-app v1.1.0' in out)
+_e5m, _p5m = listed_board('other-app', scoped=False, conditions=OTHER_CREEP)      # no workspace
+rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e5m], workspace=_ws5), _e5m['config_path']: _p5m}))
+check('two catch-alls: listed side lacks workspace -> absent (no evidence)', _TWO not in out)
+_e5n, _p5n = listed_board('other-app', scoped=False, workspace=_ws5, conditions=OTHER_CREEP)
+rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e5n], workspace=None), _e5n['config_path']: _p5n}))
+check('two catch-alls: catch-all side lacks workspace -> absent (no evidence)', _TWO not in out)
+check('two catch-alls: ...and the board is still reported (control)', '-- other-app' in out)
+# The (c) line rides the catch-all's throttle like (a) and (b).
+_e5t, _p5t = listed_board('other-app', scoped=False, workspace=_ws5, conditions=OTHER_CREEP)
+_ca5t = fresh_state()
+seed_stamp(_ca5t)
+rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e5t], workspace=_ws5), _e5t['config_path']: _p5t}),
+                      state=_ca5t)
+check('two catch-alls: the line is throttled with the catch-all', _TWO not in out)
+check('two catch-alls: ...while the listed board still speaks on its own stamp', '-- other-app' in out)
+
+
 if FAILURES:
     print('FAIL (%d)' % len(FAILURES))
     for f in FAILURES:

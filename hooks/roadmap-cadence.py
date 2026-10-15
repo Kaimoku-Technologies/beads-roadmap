@@ -305,6 +305,23 @@ def run_listed(binary, boards, timeout):
     return outcomes
 
 
+def second_catch_all(catch_payload, listed_payload):
+    """(c) in the design (github-7jn0v): a LISTED board that is unscoped on
+    the SAME workspace repeats every unowned row the catch-all shows.
+    realpath on both sides: _resolve normalises a relative path against a
+    realpath'd base but returns an absolute path as written, so /var/x and
+    /private/var/x must not read as two workspaces. If either side lacks
+    `workspace` the rule does not fire -- a finding needs evidence, and an
+    older or stubbed payload is not evidence."""
+    if listed_payload.get('scoped'):
+        return False
+    a = catch_payload.get('workspace')
+    b = listed_payload.get('workspace')
+    if not a or not b:
+        return False
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
 def problem_lines(catch_payload, outcomes):
     """The listed-board problem lines in list order (github-7jn0v). They are
     ONE non-bypass pseudo-condition of the catch-all: dropped when it is
@@ -315,6 +332,9 @@ def problem_lines(catch_payload, outcomes):
     for entry, payload, line in outcomes:
         if line is not None:
             lines.append(line)
+        elif second_catch_all(catch_payload, payload):
+            lines.append('two catch-all boards: %s repeats every unowned row -- '
+                         'add scoped = true' % entry['name'])
     return lines
 
 
