@@ -2560,6 +2560,23 @@ check('README tarball snippet found (URL and directory)',
 check('README tarball snippet names the plugin.json version',
       sorted(set(_TARBALL_VERSIONS)), [_SHIPPED_VERSION])
 
+# --- github-5659d: the GitHub Release notes exist for THIS version ---------
+# .github/workflows/release.yml builds the Release for a pushed tag from the
+# tag's CHANGELOG section and fails if there is none. Checking the plugin.json
+# version here fails CI on the release commit, before the tag is pushed.
+_NOTES = os.path.join(_REPO_ROOT, '.github', 'release-notes.py')
+_rn = subprocess.run([sys.executable, _NOTES, 'v' + _SHIPPED_VERSION],
+                     capture_output=True, text=True, timeout=30)
+check('release notes for the plugin.json version: exit 0', _rn.returncode, 0)
+check('release notes carry the section body and the footer',
+      _rn.stdout.count('\n') > 3 and 'blob/main/CHANGELOG.md' in _rn.stdout, True)
+# MUST-MISS control: a version with no section fails and prints nothing, so
+# the workflow can never publish empty notes.
+_rn_none = subprocess.run([sys.executable, _NOTES, 'v0.0.0'],
+                          capture_output=True, text=True, timeout=30)
+check('release notes for a version with no section: exit 1, no stdout',
+      (_rn_none.returncode, _rn_none.stdout), (1, ''))
+
 # --- github-3i67y: `roadmap check`, the drift check as plain text ---------
 # End to end, hermetically: a fresh directory with no roadmap.toml above it
 # and ROADMAP_CONFIG unset is the `unconfigured` state, whose once-ever nudge
