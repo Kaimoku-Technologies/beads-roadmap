@@ -259,9 +259,9 @@ def _run_board(binary, entry, timeout):
         return None, 'exited %d' % p.returncode
     try:
         payload = json.loads(p.stdout or '{}')
+        if not isinstance(payload, dict):
+            raise ValueError('not an object')
     except Exception:
-        return None, 'unparseable json'
-    if not isinstance(payload, dict):
         return None, 'unparseable json'
     if payload.get('unavailable') or payload.get('unconfigured'):
         # A listed board cannot be unconfigured (ROADMAP_CONFIG names a file
@@ -273,8 +273,8 @@ def _run_board(binary, entry, timeout):
         # Falling back to LEGACY_STATE would share one stamp across boards --
         # the cross-board reset this design forbids.
         return None, 'payload carries no state_path'
-    conds = payload['conditions']
-    if (not isinstance(conds, list) or not all(isinstance(c, dict) for c in conds)
+    if (not isinstance(payload['conditions'], list)
+            or not all(isinstance(c, dict) for c in payload['conditions'])
             or not isinstance(payload['state_path'], str)):
         return None, 'malformed payload'
     return payload, None
@@ -289,19 +289,24 @@ def run_listed(binary, boards, timeout):
     ThreadPoolExecutor(max_workers=0) raises, and the hook-wide except
     would turn that into the silent listed board this design refuses."""
     boards = [b for b in boards if isinstance(b, dict) and b.get('name') is not None]
-    todo = [(i, b) for i, b in enumerate(boards) if b.get('exists') and b.get('config_path')]
-    results = {}
-    if todo:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(todo)) as pool:
-            futures = {pool.submit(_run_board, binary, b, timeout): i for i, b in todo}
-            for f in concurrent.futures.as_completed(futures):
-                results[futures[f]] = f.result()
+    def can_run(b):
+        return bool(b.get('exists') and b.get('config_path'))
+    runnable = [b for b in boards if can_run(b)]
+    ran = iter(())
+    if runnable:
+        def one(b):
+            try:
+                return _run_board(binary, b, timeout)
+            except Exception as exc:      # belt and braces: map() re-raises
+                return None, str(exc) or exc.__class__.__name__
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(runnable)) as pool:
+            ran = iter(list(pool.map(one, runnable)))
     outcomes = []
-    for i, b in enumerate(boards):
-        if i not in results:
+    for b in boards:
+        if not can_run(b):
             outcomes.append((b, None, 'boards: %s listed, no roadmap.toml there' % b['name']))
             continue
-        payload, reason = results[i]
+        payload, reason = next(ran)
         if payload is None:
             outcomes.append((b, None, 'boards: %s unavailable: %s' % (b['name'], reason)))
         else:
@@ -437,23 +442,25 @@ def main(argv=None):
     # catch-all's block keeps today's unheaded form: the session is in or
     # under its directory, so the unheaded block is "here" and the headed
     # ones are "elsewhere" -- which is also what makes byte-identity free.
-    blocks = []                      # (lines, state path to stamp or None)
+    blocks = []                      # lines per speaking listed board
+    stamps = [state] if stamp else []   # state paths to stamp after emit, in order
     for entry, listed, _line in outcomes:
         if listed is None:
             continue
         pre_i, body_i, stamp_i = board_report(listed, listed['state_path'], days)
         if pre_i or stamp_i:
-            blocks.append(([board_header(entry)] + pre_i + body_i,
-                           listed['state_path'] if stamp_i else None))
+            blocks.append([board_header(entry)] + pre_i + body_i)
+            if stamp_i:
+                stamps.append(listed['state_path'])
 
-    speaking = stamp or any(st_i for _, st_i in blocks)
+    speaking = bool(stamps)
     lines = list(prelude)
     if speaking:
         lines.append('ROADMAP CADENCE CHECK (roadmap, github-4jmwr)')
     if stamp:
         lines.extend(body)
         lines.append('Full board: `roadmap`  ·  queue: `roadmap hotfix`')
-    for block_lines, _ in blocks:
+    for block_lines in blocks:
         lines.extend(block_lines)
     if speaking:
         lines.append('(Throttled conditions run at most once every %g days;'
@@ -461,11 +468,8 @@ def main(argv=None):
     if not lines:
         return 0  # nothing from any board -> silence
     emit('\n'.join(lines), plain=plain)
-    if stamp:
-        write_stamp(state)
-    for _, st_i in blocks:
-        if st_i:
-            write_stamp(st_i)
+    for st in stamps:
+        write_stamp(st)
     return 0
 
 

@@ -29,37 +29,45 @@ REAL_HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 FAILURES = []
 
 
-def fake_roadmap(payload, rc=0):
-    """Write a stub that prints `payload` and exits `rc`."""
+def _write_stub(*lines):
+    """Write an executable python stub (shebang + `lines`, each already
+    newline-terminated) to a temp file and return its path."""
     fd, path = tempfile.mkstemp(suffix='.py')
     os.close(fd)
     with open(path, 'w') as fh:
-        fh.write('#!/usr/bin/env python3\nimport sys\n')
-        fh.write('sys.stdout.write(%r)\n' % payload)
-        fh.write('sys.exit(%d)\n' % rc)
+        fh.write('#!/usr/bin/env python3\n')
+        for line in lines:
+            fh.write(line)
     os.chmod(path, 0o755)
     return path
+
+
+def fake_roadmap(payload, rc=0):
+    """Write a stub that prints `payload` and exits `rc`."""
+    return _write_stub('import sys\n',
+                       'sys.stdout.write(%r)\n' % payload,
+                       'sys.exit(%d)\n' % rc)
 
 
 def fake_roadmap_sleep(seconds, payload=None):
     """Write a stub that sleeps past the hook's own subprocess timeout, then
     (if it were ever allowed to finish) would print `payload` and exit 0."""
-    fd, path = tempfile.mkstemp(suffix='.py')
+    return _write_stub('import sys, time\n',
+                       'time.sleep(%r)\n' % seconds,
+                       'sys.stdout.write(%r)\n' % (payload if payload is not None else CLEAN),
+                       'sys.exit(0)\n')
+
+
+def fresh_state():
+    fd, path = tempfile.mkstemp(suffix='.json')
     os.close(fd)
-    with open(path, 'w') as fh:
-        fh.write('#!/usr/bin/env python3\nimport sys, time\n')
-        fh.write('time.sleep(%r)\n' % seconds)
-        fh.write('sys.stdout.write(%r)\n' % (payload if payload is not None else CLEAN))
-        fh.write('sys.exit(0)\n')
-    os.chmod(path, 0o755)
+    os.unlink(path)
     return path
 
 
 def run_hook(roadmap_path, days='3', state=None, timeout='10', extra=()):
     if state is None:
-        fd, state = tempfile.mkstemp(suffix='.json')
-        os.close(fd)
-        os.unlink(state)
+        state = fresh_state()
     env = dict(os.environ,
                ROADMAP_CADENCE_BIN=roadmap_path,
                ROADMAP_CADENCE_STATE=state,
@@ -335,15 +343,10 @@ check('no write verb reaches any hook argv literal', not (_tokens & WRITE_VERBS)
 def _record_argv_stub(capture_path):
     """A fake roadmap that writes its OWN sys.argv (as JSON) to
     `capture_path`, then answers with a clean payload and exits 0."""
-    fd, path = tempfile.mkstemp(suffix='.py')
-    os.close(fd)
-    with open(path, 'w') as fh:
-        fh.write('#!/usr/bin/env python3\nimport sys, json\n')
-        fh.write('open(%r, "w").write(json.dumps(sys.argv))\n' % capture_path)
-        fh.write('sys.stdout.write(%r)\n' % CLEAN)
-        fh.write('sys.exit(0)\n')
-    os.chmod(path, 0o755)
-    return path
+    return _write_stub('import sys, json\n',
+                       'open(%r, "w").write(json.dumps(sys.argv))\n' % capture_path,
+                       'sys.stdout.write(%r)\n' % CLEAN,
+                       'sys.exit(0)\n')
 
 # UNSET: the default path must not carry --state at all.
 _fd, _argv_unset = tempfile.mkstemp(suffix='.json')
@@ -601,22 +604,18 @@ def fake_roadmap_boards(by_config, rc=0):
     stderr, so a hook that runs a listed board under the WRONG ROADMAP_CONFIG
     reports it unavailable instead of quietly getting another board's
     answer. Nothing here touches bd."""
-    fd, path = tempfile.mkstemp(suffix='.py')
-    os.close(fd)
-    with open(path, 'w') as fh:
-        fh.write('#!/usr/bin/env python3\nimport os, sys, time\n')
-        fh.write('TABLE = %r\n' % by_config)
-        fh.write('key = os.environ.get("ROADMAP_CONFIG")\n')
-        fh.write('if key not in TABLE:\n')
-        fh.write('    sys.stderr.write("stub: unknown ROADMAP_CONFIG %r\\n" % (key,))\n')
-        fh.write('    sys.exit(3)\n')
-        fh.write('spec = TABLE[key]\n')
-        fh.write('if isinstance(spec, str):\n    spec = {"payload": spec}\n')
-        fh.write('time.sleep(spec.get("sleep", 0))\n')
-        fh.write('sys.stdout.write(spec["payload"])\n')
-        fh.write('sys.exit(spec.get("rc", %d))\n' % rc)
-    os.chmod(path, 0o755)
-    return path
+    return _write_stub(
+        'import os, sys, time\n',
+        'TABLE = %r\n' % by_config,
+        'key = os.environ.get("ROADMAP_CONFIG")\n',
+        'if key not in TABLE:\n',
+        '    sys.stderr.write("stub: unknown ROADMAP_CONFIG %r\\n" % (key,))\n',
+        '    sys.exit(3)\n',
+        'spec = TABLE[key]\n',
+        'if isinstance(spec, str):\n    spec = {"payload": spec}\n',
+        'time.sleep(spec.get("sleep", 0))\n',
+        'sys.stdout.write(spec["payload"])\n',
+        'sys.exit(spec.get("rc", %d))\n' % rc)
 
 
 def listed_board(name, **payload):
@@ -656,13 +655,6 @@ def stamp_of(path):
             return json.load(fh).get('last_reported_at')
     except Exception:
         return None
-
-
-def fresh_state():
-    fd, path = tempfile.mkstemp(suffix='.json')
-    os.close(fd)
-    os.unlink(path)
-    return path
 
 
 CREEP = [{'id': 2, 'bypass': False, 'lines': ['SCOPE CREEP -- v0.16.0 grew.']}]
@@ -811,17 +803,13 @@ def _record_env_stub(capture_dir, by_config):
     """fake_roadmap_boards that first writes {'argv': sys.argv, 'config':
     $ROADMAP_CONFIG} to capture_dir/<pid>.json -- one file per invocation,
     so the parallel listed runs never interleave."""
-    fd, path = tempfile.mkstemp(suffix='.py')
-    os.close(fd)
-    with open(path, 'w') as fh:
-        fh.write('#!/usr/bin/env python3\nimport os, sys, json\n')
-        fh.write('open(os.path.join(%r, "%%d.json" %% os.getpid()), "w").write(json.dumps(\n'
-                 '    {"argv": sys.argv, "config": os.environ.get("ROADMAP_CONFIG")}))\n' % capture_dir)
-        fh.write('TABLE = %r\n' % by_config)
-        fh.write('sys.stdout.write(TABLE.get(os.environ.get("ROADMAP_CONFIG"), ""))\n')
-        fh.write('sys.exit(0)\n')
-    os.chmod(path, 0o755)
-    return path
+    return _write_stub(
+        'import os, sys, json\n',
+        'open(os.path.join(%r, "%%d.json" %% os.getpid()), "w").write(json.dumps(\n'
+        '    {"argv": sys.argv, "config": os.environ.get("ROADMAP_CONFIG")}))\n' % capture_dir,
+        'TABLE = %r\n' % by_config,
+        'sys.stdout.write(TABLE.get(os.environ.get("ROADMAP_CONFIG"), ""))\n',
+        'sys.exit(0)\n')
 
 
 _cap = tempfile.mkdtemp()
@@ -902,18 +890,19 @@ for _label, _scoped, _listed_ws, _want in (
           (_TWO in out) == _want)
     check('two catch-alls (%s): the board is still reported as a board' % _label,
           '-- other-app' in out and 'other-app v1.1.0' in out)
-_e5m, _p5m = listed_board('other-app', scoped=False, conditions=OTHER_CREEP)      # no workspace
-rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e5m], workspace=_ws5), _e5m['config_path']: _p5m}))
-check('two catch-alls: listed side lacks workspace -> absent (no evidence)',
-      _TWO not in out and '-- other-app' in out)
-_e5n, _p5n = listed_board('other-app', scoped=False, workspace=_ws5, conditions=OTHER_CREEP)
-rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e5n], workspace=None), _e5n['config_path']: _p5n}))
-check('two catch-alls: catch-all side lacks workspace -> absent (no evidence)', _TWO not in out)
-check('two catch-alls: ...and the board is still reported (control)', '-- other-app' in out)
-_e5b, _p5b = listed_board('other-app', scoped=False, conditions=OTHER_CREEP)
-rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e5b], workspace=None), _e5b['config_path']: _p5b}))
-check('two catch-alls: neither side has workspace -> absent (no evidence)',
-      _TWO not in out and '-- other-app' in out)
+# (label, listed payload kwargs, catch-all workspace, must-hit control?). The
+# listed side's workspace is missing, or the catch-all's is, or both are.
+for _label, _lkw, _cw, _ctl in (
+        ('listed side lacks workspace', {}, _ws5, False),
+        ('catch-all side lacks workspace', dict(workspace=_ws5), None, True),
+        ('neither side has workspace', {}, None, False)):
+    _e5x, _p5x = listed_board('other-app', scoped=False, conditions=OTHER_CREEP, **_lkw)
+    rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e5x], workspace=_cw),
+                                               _e5x['config_path']: _p5x}))
+    check('two catch-alls: %s -> absent (no evidence)' % _label,
+          _TWO not in out and (_ctl or '-- other-app' in out))
+    if _ctl:
+        check('two catch-alls: ...and the board is still reported (control)', '-- other-app' in out)
 # The (c) line rides the catch-all's throttle like (a) and (b).
 _e5t, _p5t = listed_board('other-app', scoped=False, workspace=_ws5, conditions=OTHER_CREEP)
 _ca5t = fresh_state()
@@ -934,9 +923,9 @@ for _label, _cw, _lkw in (
         ('catch-all workspace is not a string', ['x'], dict(scoped=False, workspace=_ws6, conditions=OTHER_CREEP)),
         ('listed conditions are not dicts', _ws6, dict(scoped=False, workspace=_ws6, conditions=['notadict'])),
         ('listed state_path is not a string', _ws6, dict(scoped=False, workspace=_ws6, conditions=OTHER_CREEP, state_path=7))):
-    _e6, _p6 = listed_board('other-app', **_lkw)
-    rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e6], workspace=_cw, conditions=CREEP),
-                                               _e6['config_path']: _p6}))
+    _e6m, _p6m = listed_board('other-app', **_lkw)
+    rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e6m], workspace=_cw, conditions=CREEP),
+                                               _e6m['config_path']: _p6m}))
     check('malformed payload (%s): the catch-all still speaks' % _label, _CA_OWN in out)
 rc, out, _ = run_hook(fake_roadmap_boards({None: json.dumps({'conditions': CREEP, 'boards': 5})}))
 check('malformed payload (boards is not a list): the catch-all still speaks', _CA_OWN in out)

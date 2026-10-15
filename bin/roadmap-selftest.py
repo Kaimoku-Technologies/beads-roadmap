@@ -2044,10 +2044,10 @@ except rm.RoadmapUnavailable as exc:
 # layer exists to prevent. check_type_rejected asserts BOTH that the raised
 # exception is specifically RoadmapUnavailable (not merely "something") and
 # that its message names the offending key.
-def check_type_rejected(label, toml_text, key):
-    _d, _p = write_cfg(toml_text)
+def _check_rejected_path(label, path, needles):
+    """`needles` is [(check-label suffix, substrings that must ALL appear)]."""
     try:
-        rm.load_config(_p)
+        rm.load_config(path)
         check(label + ' raises', 'no raise', 'RoadmapUnavailable')
         return
     except Exception as exc:
@@ -2057,7 +2057,13 @@ def check_type_rejected(label, toml_text, key):
         # attribute. Catching Exception and checking the type is what
         # actually proves no TypeError (or anything else) escapes.
         check(label + ' is RoadmapUnavailable', isinstance(exc, rm.RoadmapUnavailable), True)
-        check(label + ' names the key', key in str(exc), True)
+        for suffix, subs in needles:
+            check(label + suffix, all(sub in str(exc) for sub in subs), True)
+
+
+def check_type_rejected(label, toml_text, key):
+    _d, _p = write_cfg(toml_text)
+    _check_rejected_path(label, _p, [(' names the key', (key,))])
 
 
 check_type_rejected('workspace wrong type',
@@ -2967,61 +2973,40 @@ _ts = rm.load_config(write_cfg(GOOD + 'boards = ["a/"]\n')[1])['boards'][0]
 check('boards: a trailing slash normalises but the name stays as written',
       (_ts['name'], os.path.basename(os.path.dirname(_ts['config_path']))), ('a/', 'a'))
 
-check_type_rejected('boards bare string', GOOD + 'boards = "other-app"\n',
-                    'boards must be a list of strings')
-check_type_rejected('boards non-list', GOOD + 'boards = 5\n',
-                    'boards must be a list of strings')
-check_type_rejected('boards non-string element', GOOD + 'boards = [1]\n',
-                    'boards must be a list of strings')
-check_type_rejected('boards empty list', GOOD + 'boards = []\n', 'boards is empty')
-check_type_rejected('boards empty string', GOOD + 'boards = [""]\n',
-                    'boards contains an empty string')
-check_type_rejected('boards names its own directory', GOOD + 'boards = ["."]\n',
-                    "is this file's own directory")
-# Review focus 2: three other spellings of "this directory".
-check_type_rejected('boards names its own directory as "./"', GOOD + 'boards = ["./"]\n',
-                    "is this file's own directory")
-check_type_rejected('boards duplicates', GOOD + 'boards = ["a", "./a"]\n',
-                    'resolve to the same roadmap.toml')
-
-
-def _refused(label, path, needle):
-    """Like check_type_rejected, for a config whose text had to embed a path
-    only known after write_cfg() created its directory."""
-    try:
-        rm.load_config(path)
-        check(label + ' raises', 'no raise', 'RoadmapUnavailable')
-    except Exception as exc:
-        check(label + ' is RoadmapUnavailable', isinstance(exc, rm.RoadmapUnavailable), True)
-        check(label + ' names it', needle in str(exc), True)
-
+_BOARDS_REJECTED = [
+    ('boards bare string', 'boards = "other-app"\n', 'boards must be a list of strings'),
+    ('boards non-list', 'boards = 5\n', 'boards must be a list of strings'),
+    ('boards non-string element', 'boards = [1]\n', 'boards must be a list of strings'),
+    ('boards empty list', 'boards = []\n', 'boards is empty'),
+    ('boards empty string', 'boards = [""]\n', 'boards contains an empty string'),
+    ('boards names its own directory', 'boards = ["."]\n', "is this file's own directory"),
+    # Review focus 2: three other spellings of "this directory".
+    ('boards names its own directory as "./"', 'boards = ["./"]\n',
+     "is this file's own directory"),
+    ('boards duplicates', 'boards = ["a", "./a"]\n', 'resolve to the same roadmap.toml'),
+]
+for _lbl, _txt, _needle in _BOARDS_REJECTED:
+    check_type_rejected(_lbl, GOOD + _txt, _needle)
 
 _sd, _sp = write_cfg(GOOD)
 with open(_sp, 'w') as _fh:            # the tempdir's NON-realpath spelling (/var/... on macOS)
     _fh.write(GOOD + 'boards = ["%s"]\n' % _sd)
-_refused('boards names its own directory by an absolute non-realpath spelling', _sp,
-         "is this file's own directory")
+_check_rejected_path('boards names its own directory by an absolute non-realpath spelling',
+                     _sp, [(' names it', ("is this file's own directory",))])
 _ld, _lp = write_cfg(GOOD + 'boards = ["a", "link"]\n')
 os.makedirs(os.path.join(_ld, 'a'))
 os.symlink(os.path.join(_ld, 'a'), os.path.join(_ld, 'link'))
-_refused('boards: a symlink to a listed directory is a duplicate', _lp,
-         'resolve to the same roadmap.toml')
+_check_rejected_path('boards: a symlink to a listed directory is a duplicate',
+                     _lp, [(' names it', ('resolve to the same roadmap.toml',))])
 # MUST-MISS control for the pair above: two DIFFERENT directories load.
 check('boards: two distinct entries load with two entries (control)',
       len(rm.load_config(write_cfg(GOOD + 'boards = ["a", "b"]\n')[1])['boards']), 2)
 
 # boards + scoped: the board that lists the others IS the catch-all.
 _, _bs = write_cfg(GOOD + 'scoped = true\nboards = ["a"]\n')
-try:
-    rm.load_config(_bs)
-    check('boards with scoped = true raises', 'no raise', 'RoadmapUnavailable')
-except Exception as _exc:
-    check('boards with scoped = true is RoadmapUnavailable',
-          isinstance(_exc, rm.RoadmapUnavailable), True)
-    check('boards with scoped = true names BOTH keys',
-          'boards' in str(_exc) and 'scoped' in str(_exc), True)
-    check('boards with scoped = true says which board lists the others',
-          'catch-all' in str(_exc), True)
+_check_rejected_path('boards with scoped = true', _bs, [
+    (' names BOTH keys', ('boards', 'scoped')),
+    (' says which board lists the others', ('catch-all',))])
 check('boards with scoped = false loads (control)',
       rm.load_config(write_cfg(GOOD + 'scoped = false\nboards = ["a"]\n')[1])['scoped'], False)
 # `scoped = true` alone still loads: the 0.7.0 arm above. The claim_* type

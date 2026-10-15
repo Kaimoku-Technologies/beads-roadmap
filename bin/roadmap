@@ -117,17 +117,20 @@ def find_config(start=None, env=None):
         d = parent
 
 
-def _require_str_list(path, key, val):
+def _require_str_list(path, key, val, empty_msg=None):
     """Refuse a non-list or a list with a non-string BY NAME. A bare string
     is refused rather than coerced -- the auto_label_prefixes trap:
     str.startswith() accepts a tuple, so a bare string would decompose into
     one-character prefixes. Extracted from the 0.7.0 claim_* loop so `boards`
     can share it (github-7jn0v); the message is pinned byte-identically by
-    the claim_* arms in the selftest."""
+    the claim_* arms in the selftest. With `empty_msg`, an '' element is
+    refused too, with that message."""
     if (isinstance(val, str) or not isinstance(val, list)
             or not all(isinstance(x, str) for x in val)):
         raise RoadmapUnavailable('%s: %s must be a list of strings, got %r'
                                  % (path, key, val))
+    if empty_msg and any(x == '' for x in val):
+        raise RoadmapUnavailable('%s: %s' % (path, empty_msg))
 
 
 def load_config(path=None, start=None, env=None, today=None):
@@ -216,12 +219,10 @@ def load_config(path=None, start=None, env=None, today=None):
     for k in ('claim_title_prefixes', 'claim_id_prefixes'):
         val = raw.get(k, [])
         # Same trap as auto_label_prefixes: see _require_str_list.
-        _require_str_list(path, k, val)
         # '' is a prefix of EVERY title and id. One stray "" would claim the
         # whole board and silently un-scope it -- the clean-wrong signal.
-        if any(x == '' for x in val):
-            raise RoadmapUnavailable('%s: %s contains an empty string, which '
-                                     'would claim every row' % (path, k))
+        _require_str_list(path, k, val, '%s contains an empty string, which '
+                                        'would claim every row' % k)
         # A rule with no switch is a likely mistake; refuse rather than infer.
         if val and not scoped:
             raise RoadmapUnavailable('%s: %s is set but scoped is not true -- '
@@ -258,12 +259,11 @@ def load_config(path=None, start=None, env=None, today=None):
     # spelling and a symlink are all the same directory.
     boards = ()
     if 'boards' in raw:
-        _require_str_list(path, 'boards', raw['boards'])
+        _require_str_list(path, 'boards', raw['boards'],
+                          'boards contains an empty string')
         if not raw['boards']:
             raise RoadmapUnavailable(
                 '%s: boards is empty -- list a directory or remove the key' % path)
-        if any(x == '' for x in raw['boards']):
-            raise RoadmapUnavailable('%s: boards contains an empty string' % path)
         own = os.path.realpath(path)
         seen = {}
         entries = []
