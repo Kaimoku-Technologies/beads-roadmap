@@ -194,7 +194,7 @@ reintroduce the very leak this fixes, in count form. The constraint is
 documented and scoped boards are marked visibly (header `· scoped`, JSON
 `scoped: true`). The catch-all therefore **lists** its siblings (`boards`, github-7jn0v). Only
 the hook reads the list; the board and `--json` of every board are unchanged
-apart from the added `workspace` key. Each listed board runs under its own
+apart from the added `workspace` key, and, on the board that lists them, `boards`. Each listed board runs under its own
 `ROADMAP_CONFIG`, in parallel, and is judged on its own state file, so one
 board's report never resets another's throttle.
 

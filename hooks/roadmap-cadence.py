@@ -273,6 +273,10 @@ def _run_board(binary, entry, timeout):
         # Falling back to LEGACY_STATE would share one stamp across boards --
         # the cross-board reset this design forbids.
         return None, 'payload carries no state_path'
+    conds = payload['conditions']
+    if (not isinstance(conds, list) or not all(isinstance(c, dict) for c in conds)
+            or not isinstance(payload['state_path'], str)):
+        return None, 'malformed payload'
     return payload, None
 
 
@@ -317,7 +321,7 @@ def second_catch_all(catch_payload, listed_payload):
         return False
     a = catch_payload.get('workspace')
     b = listed_payload.get('workspace')
-    if not a or not b:
+    if not (a and b and isinstance(a, str) and isinstance(b, str)):
         return False
     return os.path.realpath(a) == os.path.realpath(b)
 
@@ -398,7 +402,8 @@ def main(argv=None):
     # on this thread, in list order. A listed board that cannot be run is a
     # line under the catch-all: the one deliberate exception to property 4.
     # The catch-all's own `boards` is the only list read (one level).
-    outcomes = run_listed(binary, payload.get('boards') or (), timeout)
+    boards = payload.get('boards')
+    outcomes = run_listed(binary, boards if isinstance(boards, list) else (), timeout)
     problems = problem_lines(payload, outcomes)
     if problems:
         payload['conditions'] = list(payload.get('conditions') or []) + [

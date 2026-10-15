@@ -69,7 +69,7 @@ auto_label_prefixes = []
 # Optional, on the CATCH-ALL board only. Directories, relative to this file,
 # that each hold their own roadmap.toml. The session-start check (and
 # `roadmap check`) run from this directory then report every listed board,
-# each on its own throttle, not just this one. The text board and --json of
-# a board never change. Cannot be combined with scoped = true: the board
-# that lists the others is the catch-all.
+# each on its own throttle, not just this one. The text board never changes;
+# `--json` gains `workspace`, and this list as `boards`. Cannot be combined
+# with scoped = true: the board that lists the others is the catch-all.
 # boards = ["other-app", "third-app"]

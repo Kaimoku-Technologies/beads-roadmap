@@ -904,14 +904,16 @@ for _label, _scoped, _listed_ws, _want in (
           '-- other-app' in out and 'other-app v1.1.0' in out)
 _e5m, _p5m = listed_board('other-app', scoped=False, conditions=OTHER_CREEP)      # no workspace
 rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e5m], workspace=_ws5), _e5m['config_path']: _p5m}))
-check('two catch-alls: listed side lacks workspace -> absent (no evidence)', _TWO not in out)
+check('two catch-alls: listed side lacks workspace -> absent (no evidence)',
+      _TWO not in out and '-- other-app' in out)
 _e5n, _p5n = listed_board('other-app', scoped=False, workspace=_ws5, conditions=OTHER_CREEP)
 rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e5n], workspace=None), _e5n['config_path']: _p5n}))
 check('two catch-alls: catch-all side lacks workspace -> absent (no evidence)', _TWO not in out)
 check('two catch-alls: ...and the board is still reported (control)', '-- other-app' in out)
 _e5b, _p5b = listed_board('other-app', scoped=False, conditions=OTHER_CREEP)
 rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e5b], workspace=None), _e5b['config_path']: _p5b}))
-check('two catch-alls: neither side has workspace -> absent (no evidence)', _TWO not in out)
+check('two catch-alls: neither side has workspace -> absent (no evidence)',
+      _TWO not in out and '-- other-app' in out)
 # The (c) line rides the catch-all's throttle like (a) and (b).
 _e5t, _p5t = listed_board('other-app', scoped=False, workspace=_ws5, conditions=OTHER_CREEP)
 _ca5t = fresh_state()
@@ -920,6 +922,37 @@ rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e5t], workspace=_ws
                       state=_ca5t)
 check('two catch-alls: the line is throttled with the catch-all', _TWO not in out)
 check('two catch-alls: ...while the listed board still speaks on its own stamp', '-- other-app' in out)
+
+
+# 6. MALFORMED-BUT-PARSEABLE payloads (final review M1): a listed board or a
+# `boards` value of the wrong shape must never silence the catch-all. The
+# must-hit control in every arm is the catch-all's own SCOPE CREEP line.
+_ws6 = tempfile.mkdtemp()
+_CA_OWN = 'v0.16.0 grew'
+for _label, _cw, _lkw in (
+        ('listed workspace is not a string', _ws6, dict(scoped=False, workspace=5, conditions=OTHER_CREEP)),
+        ('catch-all workspace is not a string', ['x'], dict(scoped=False, workspace=_ws6, conditions=OTHER_CREEP)),
+        ('listed conditions are not dicts', _ws6, dict(scoped=False, workspace=_ws6, conditions=['notadict'])),
+        ('listed state_path is not a string', _ws6, dict(scoped=False, workspace=_ws6, conditions=OTHER_CREEP, state_path=7))):
+    _e6, _p6 = listed_board('other-app', **_lkw)
+    rc, out, _ = run_hook(fake_roadmap_boards({None: catch_all([_e6], workspace=_cw, conditions=CREEP),
+                                               _e6['config_path']: _p6}))
+    check('malformed payload (%s): the catch-all still speaks' % _label, _CA_OWN in out)
+rc, out, _ = run_hook(fake_roadmap_boards({None: json.dumps({'conditions': CREEP, 'boards': 5})}))
+check('malformed payload (boards is not a list): the catch-all still speaks', _CA_OWN in out)
+
+
+# 7. THE MANIFEST: the hook runs the catch-all and THEN the listed boards, each
+# under the per-board timeout, so hooks.json must allow both plus margin
+# (final review I1). Control: the constant is read from the hook itself.
+_src = open(HOOK).read()
+_m = [n.value.value for n in ast.parse(_src).body
+      if isinstance(n, ast.Assign) and any(getattr(t, 'id', '') == 'DEFAULT_TIMEOUT' for t in n.targets)]
+_manifest = json.load(open(os.path.join(os.path.dirname(os.path.abspath(HOOK)), 'hooks.json')))
+_hk = _manifest['hooks']['SessionStart'][0]['hooks'][0]
+check('manifest: DEFAULT_TIMEOUT was found in the hook (control)', len(_m) == 1 and isinstance(_m[0], int))
+check('manifest: hooks.json timeout covers 2 x DEFAULT_TIMEOUT + 10',
+      bool(_m) and isinstance(_hk.get('timeout'), (int, float)) and _hk['timeout'] >= 2 * _m[0] + 10)
 
 
 if FAILURES:

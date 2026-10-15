@@ -123,7 +123,7 @@ your `PATH`. See [Requirements](#requirements) for the details.
 | **owned** | An unlabelled row this board claims: it carries this namespace's release or backlog label, its nearest labelled ancestor epic does, or a configured title/id prefix matches. |
 | **scoped board** | A board with `scoped = true`: hotfix queue, unscheduled list and throughput cover owned rows only. Its header ends in `· scoped`. |
 | **catch-all board** | A board without `scoped`: shows every unlabelled row, as a single-product board always has. Keep exactly one per shared `bd` database. |
-| **listed board** | A scoped board named in the catch-all's `boards` list. The catch-all's session-start check runs it too and reports it under a `-- <name>` header; a listed board that is missing or cannot be read is itself reported. |
+| **listed board** | A board named in the catch-all's `boards` list (normally scoped; an unscoped one on the same workspace is flagged). The catch-all's session-start check runs it too and reports it under a `-- <name>` header; a listed board that is missing or cannot be read is itself reported. |
 | **drift** | Any of nine planning problems (see [DESIGN.md](docs/DESIGN.md)) that the session-start check reports. |
 
 ## Install
@@ -396,16 +396,15 @@ that one session hears them all:
 # Optional, on the CATCH-ALL board only. Directories, relative to this file,
 # that each hold their own roadmap.toml. The session-start check (and
 # `roadmap check`) run from this directory then report every listed board,
-# each on its own throttle, not just this one. The text board and --json of
-# a board never change. Cannot be combined with scoped = true: the board
-# that lists the others is the catch-all.
-# boards = ["other-app", "third-app"]
+# each on its own throttle, not just this one. The text board never changes;
+# `--json` gains `workspace`, and this list as `boards`. Cannot be combined
+# with scoped = true: the board that lists the others is the catch-all.
 boards = ["other-app", "third-app"]
 ```
 
 The board that lists the others is the catch-all, so `boards` together with
-`scoped = true` is refused. Each listed directory must hold its own
-`roadmap.toml`. Entries are compared by their real path, so the catch-all's
+`scoped = true` is refused. Each listed directory should hold its own
+`roadmap.toml`; one that does not is reported, not refused. Entries are compared by their real path, so the catch-all's
 own directory (by any spelling) and a repeated directory are refused at load.
 
 The report is the catch-all's lines as today, then one block per listed board
@@ -427,7 +426,7 @@ listed:
   the listed board is unscoped and uses the same `bd` workspace as the
   catch-all, so both show every unlabelled row.
 
-These repeat every three days, like scope creep, not every session. A listed
+These repeat at the throttle interval (three days by default, `ROADMAP_CADENCE_DAYS`), like scope creep, not every session. A listed
 board that is unscoped but uses a *different* workspace is fine: it is
 another database's catch-all. Listing is one level only; a listed board's own
 `boards` key is never followed.

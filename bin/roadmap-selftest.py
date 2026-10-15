@@ -1330,6 +1330,14 @@ with tempfile.TemporaryDirectory() as _d:
     _pl_plain = json.loads(_out)
     check('--json: NO boards key at all without the config key (must-miss control)',
           'boards' in _pl_plain, False)
+    # main's top-level render_json keys (git show main:bin/roadmap), hard-coded:
+    # a dropped or renamed key must fail here, and only `workspace` is new.
+    _MAIN_KEYS = {'repo', 'cut', 'in_flight', 'planned', 'baseline', 'versions',
+                  'unscheduled_count', 'unscheduled', 'backlog_count', 'backlog',
+                  'horizon', 'scoped', 'hotfix_count', 'hotfix', 'throughput',
+                  'conditions', 'state_path', 'legacy_state_available'}
+    check('--json: top-level keys are main\'s plus workspace, nothing dropped',
+          set(_pl_plain), _MAIN_KEYS | {'workspace'})
     check('--json: workspace is unconditional', _pl_plain.get('workspace'),
           TEST_CFG['workspace'])
 

@@ -205,7 +205,7 @@ board's payload (one level).
    No `--state` is ever passed to a listed board, even when `ROADMAP_CADENCE_STATE` is set:
    that seam forces the **catch-all's** stamp only (docstring updated to say so). The listed
    board's binary resolves its own default state path beside its config. Wall time is the
-   slowest board plus process overhead.
+   catch-all plus the slowest listed board.
 3. **Subprocesses run in the pool; every state read and write happens on the main thread**,
    after `as_completed`/`result()` has returned, in list order. The stamp files are per
    board, so no two writes race, but keeping the writes sequential means a later debugging
