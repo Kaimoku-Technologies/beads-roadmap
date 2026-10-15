@@ -2,14 +2,16 @@ name: test
 on: [push, pull_request]
 jobs:
   selftest:
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: that label moves to 26.04 from 2026-10-19
+    # (actions/runner-images#14748). Moving the image is a deliberate edit.
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
         python: ['3.11', '3.12', '3.13']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       # No bd, no git fixture, no pip install: the suites feed synthetic rows.

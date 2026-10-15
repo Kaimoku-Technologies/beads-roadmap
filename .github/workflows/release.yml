@@ -16,13 +16,15 @@ permissions:
   contents: write
 jobs:
   release:
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: that label moves to 26.04 from 2026-10-19
+    # (actions/runner-images#14748). Moving the image is a deliberate edit.
+    runs-on: ubuntu-26.04
     steps:
       # Default ref: a tag push checks out the tag itself; a manual run checks
       # out the branch it was started from, whose CHANGELOG holds every
       # section. (Checking out an old tag would lack .github/release-notes.py.)
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
       - name: Notes from CHANGELOG
